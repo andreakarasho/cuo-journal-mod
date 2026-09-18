@@ -28,6 +28,18 @@ make build LTO=false      # faster single-link build while iterating
 Install by copying `dist/journal` into the client's `ecs-mods/` folder (next to
 the executable).
 
+Release builds are stripped (no debug info, no stack-trace metadata,
+`--strip-all` on the wasm). Pass `-p:StripSymbols=false` when you need a wasm
+trap to symbolicate.
+
+## Publishing
+
+CI (`.github/workflows/build.yml`) builds every push and PR. Pushing a `v*` tag
+also uploads `journal.zip` (the `mod.json` + `mod.wasm` pair) to a GitHub
+Release and prints its sha256 plus the ready-made registry entry for
+[ClassicUO/classicuo-mods](https://github.com/ClassicUO/classicuo-mods) —
+open a PR there with `mods/journal.json` to list the mod.
+
 ## Turn the built-in log off
 
 The client draws its own bottom-left log; with the mod loaded you'd see both.
@@ -44,10 +56,5 @@ No bespoke host hooks — everything is existing mod surface:
 | drag | `cuo:ui/movable` (+ `cuo:ui/no-right-click-close`, so a stray right-click can't close it) |
 | resize | `cuo:ui/resizable` — the host owns the gesture; a mod must never do rect math off the raw mouse |
 | hover / fade | `cuo:input/mouse` + `cuo:engine/time` |
+| line colour | the `hue_color` host import — the server's UO hue resolved to RGB, the same tint the host would paint the glyph with |
 | persistence | per-mod storage (`Data/Mods/journal/storage.json`) |
-
-### Known gap
-
-A mod has no UO hue → RGB resolver, so a line takes its colour from the channel
-(system / chat / party / guild), not from the server's hue. The built-in log
-renders the exact hue.

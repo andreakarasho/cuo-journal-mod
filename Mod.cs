@@ -54,6 +54,9 @@ public sealed class JournalMod : Mod
         public string Text = "";
         public int Tab;
         public float Expire;
+        public ushort Hue;
+        public Color Color = Color.Rgba(205, 210, 224, 255);
+        public bool Resolved;
     }
 
     readonly List<Line> _lines = new();
@@ -87,7 +90,7 @@ public sealed class JournalMod : Mod
         {
             if (t.Event.Kind != 1 || string.IsNullOrEmpty(t.Event.Text))
                 return;
-            Append(t.Event.Text, TabOf(t.Event.MessageType));
+            Append(t.Event.Text, TabOf(t.Event.MessageType), t.Event.Hue);
         });
 
         m.AddSystem((Commands cmds, ModContext ctx) => Tick(cmds, ctx)).InStage(Stage.Update).Label("journal-tick");
@@ -129,7 +132,7 @@ public sealed class JournalMod : Mod
         _ => 1,
     };
 
-    void Append(string text, int tab)
+    void Append(string text, int tab, ushort hue)
     {
         // Collapse an immediate repeat, like the built-in log.
         if (_lines.Count > 0 && _lines[^1].Text == text)
@@ -140,7 +143,7 @@ public sealed class JournalMod : Mod
         }
         if (_lines.Count >= MaxLines)
             _lines.RemoveAt(0);
-        _lines.Add(new Line { Text = text, Tab = tab, Expire = _now + Lifetime });
+        _lines.Add(new Line { Text = text, Tab = tab, Hue = hue, Expire = _now + Lifetime });
         _dirty = true;
     }
 
@@ -441,13 +444,20 @@ public sealed class JournalMod : Mod
             if (!used) continue;
 
             var line = picked[slot - (LineSlots - picked.Count)];
+            if (!line.Resolved)
+            {
+                // The host resolves the UO hue for us (cuo hue_color import) — the
+                // same tint it would put on the glyph itself. Cached per line: the
+                // import is a guest round-trip, not a table lookup.
+                line.Color = line.Hue != 0 ? ctx.Ui.HueColor(line.Hue) : TabColor(line.Tab);
+                line.Resolved = true;
+            }
             cmds.Insert(ent, new Text { Value = line.Text });
-            cmds.Insert(ent, new TextColor { Value = TabColor(line.Tab) });
+            cmds.Insert(ent, new TextColor { Value = line.Color });
         }
     }
 
-    // A mod has no hue->RGB resolver, so lines take their colour from the
-    // channel rather than the server's hue.
+    // Fallback for an unhued (hue 0) line: colour it by channel.
     static Color TabColor(int tab) => tab switch
     {
         3 => Color.Rgba(120, 190, 255, 255), // party

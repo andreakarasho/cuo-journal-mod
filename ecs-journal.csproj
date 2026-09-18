@@ -17,6 +17,31 @@
 
     <Import Project="$(CuoModSdkDir)ModSdk.targets" />
 
+    <!-- Release ships stripped: no debug info, no stack-trace metadata, symbols
+         gone from the wasm. Same set the core guest uses under -p:Deployment=prod.
+         Build with -p:Configuration=Debug (or -p:StripSymbols=false) while
+         debugging — a stripped module turns a wasm trap into an address. -->
+    <PropertyGroup Condition="'$(StripSymbols)' == ''">
+        <StripSymbols Condition="'$(Configuration)' == 'Release'">true</StripSymbols>
+        <StripSymbols Condition="'$(Configuration)' != 'Release'">false</StripSymbols>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(StripSymbols)' == 'true'">
+        <TrimMode>link</TrimMode>
+        <DebuggerSupport>false</DebuggerSupport>
+        <EventSourceSupport>false</EventSourceSupport>
+        <StackTraceSupport>false</StackTraceSupport>
+        <IlcGenerateStackTraceData>false</IlcGenerateStackTraceData>
+        <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+        <DebugType>none</DebugType>
+        <DebugSymbols>false</DebugSymbols>
+        <NativeDebugSymbols>false</NativeDebugSymbols>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(StripSymbols)' == 'true'">
+        <LinkerArg Include="-Wl,--strip-all" />
+    </ItemGroup>
+
     <!-- MAX-PERF LTO (opt-in: -p:WasmLto=true). Port of the core guest's CuoWasmLto
          machinery (ClassicUO.Ecs.Wasm.csproj) — same workarounds, same double link.
          Full build line:
