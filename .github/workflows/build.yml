@@ -19,6 +19,18 @@ jobs:
         with:
           global-json-file: global.json
 
+      # ILC.LLVM shells out to clang from the WASI SDK for the wasm codegen +
+      # link; without WASI_SDK_PATH the publish stops at "Wasi SDK not found".
+      - name: Install WASI SDK
+        run: |
+          curl -fsSL -o wasi-sdk.tar.gz             https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION%%.*}/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux.tar.gz
+          mkdir -p "$HOME/wasi-sdk"
+          tar -xzf wasi-sdk.tar.gz -C "$HOME/wasi-sdk" --strip-components=1
+          echo "WASI_SDK_PATH=$HOME/wasi-sdk" >> "$GITHUB_ENV"
+        env:
+          # Matches the SDK the mod is developed against.
+          WASI_SDK_VERSION: "29.0"
+
       # The ILC.LLVM packages the wasi-wasm publish pulls live on the dnceng
       # feeds; nuget.config in the repo root already lists them.
       - name: Build (LTO, stripped)
