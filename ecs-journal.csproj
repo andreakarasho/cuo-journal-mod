@@ -1,0 +1,119 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <!-- The mod SDK, as the external/classicuo-mods-sdk submodule. -->
+        <CuoModSdkDir>$(MSBuildThisFileDirectory)external\classicuo-mods-sdk\dotnet\</CuoModSdkDir>
+    </PropertyGroup>
+
+    <Import Project="$(CuoModSdkDir)ModSdk.props" />
+
+    <PropertyGroup>
+        <CuoModType>CuoJournal.JournalMod</CuoModType>
+        <!-- The SDK compiles as its own assembly (ProjectReference in ModSdk.targets);
+             globbing its sources in-tree duplicates every type and ILC rejects the
+             result. Same exclusion the assistant mod carries. -->
+        <DefaultItemExcludes>$(DefaultItemExcludes);$(CuoModSdkDir)**</DefaultItemExcludes>
+    </PropertyGroup>
+
+    <Import Project="$(CuoModSdkDir)ModSdk.targets" />
+
+    <!-- MAX-PERF LTO (opt-in: -p:WasmLto=true). Port of the core guest's CuoWasmLto
+         machinery (ClassicUO.Ecs.Wasm.csproj) — same workarounds, same double link.
+         Full build line:
+           dotnet publish -c Release -p:OptimizationPreference=Speed -p:IlcPgoOptimize=false
+              -p:WasmLto=true [-p:Deployment=prod trim set]
+         The C#-mod path has no Deployment=prod levers of its own; pass the trim set
+         as -p: properties (TrimMode=link, DebugSymbols=false, …) as the core's prod
+         targets do, and run wasm-opt -O3 over the result by hand. -->
+
+    <!-- Compile step: -O3 -flto — clang emits bitcode-in-object, which finally gives
+         the linker something to optimize. WasmOptimizationSetting is assigned by the
+         ILC targets at import time (-O2 for Speed/wasi), so it must be overridden in an
+         execution-phase target. The CQ workarounds the targets pass to this same step
+         stay on; under LTO they have to be REPEATED at the link (see the LinkerArgs). -->
+    <Target Name="JournalLtoCompile" BeforeTargets="CompileWasmObjects" Condition="'$(WasmLto)' == 'true'">
+        <PropertyGroup>
+            <WasmOptimizationSetting>-O3 -flto</WasmOptimizationSetting>
+            <WasmOptimizationSetting Condition="'$(IlcLlvmExceptionHandlingModel)' == 'wasm'">$(WasmOptimizationSetting) -mllvm -wasm-use-legacy-eh=false</WasmOptimizationSetting>
+        </PropertyGroup>
+        <!-- CompileWasmObjects is incremental on .bc -> .o and knows nothing about the
+             flags: a changed opt level would silently reuse objects built with the old
+             one. Delete only the clang-produced objects (those that have a .bc to be
+             rebuilt from) — ILC also emits .o files directly (ecs_journal.o,
+             .external.o) which no clang step regenerates, and wiping those breaks the
+             link until ILC itself re-runs. -->
+        <ItemGroup>
+            <_LtoBitcode Include="$(NativeIntermediateOutputPath)$(TargetName).*.bc" />
+            <_LtoStaleObj Include="@(_LtoBitcode->'%(RelativeDir)%(Filename)$(NativeObjectExt)')" />
+        </ItemGroup>
+        <Delete Files="@(_LtoStaleObj)" />
+    </Target>
+
+    <!-- Link step: LTO codegen moves here. The two -mllvm CQ workarounds the targets pass
+         to the COMPILE step must be repeated, because under LTO the backend runs inside
+         the linker — and the Wl form, not a bare "-mllvm x" (clang's driver drops the
+         bare form on a link line). save-temps keeps the combined object the relink
+         below needs. -->
+    <ItemGroup Condition="'$(WasmLto)' == 'true'">
+        <LinkerArg Include="-O3" />
+        <LinkerArg Include="-flto" />
+        <LinkerArg Include="-Wl,-mllvm,-combiner-global-alias-analysis=false" />
+        <LinkerArg Include="-Wl,-mllvm,-disable-lsr" />
+        <LinkerArg Include="-Wl,--save-temps" />
+    </ItemGroup>
+
+    <!-- WHY THE LTO LINK RUNS TWICE. A one-step LTO link traps ("uninitialized element")
+         the first time an exception is dispatched: ILC emits its EH funclets and a few
+         helpers as ALIASES, wasm-ld cannot derive a wasm signature for an alias out of a
+         bitcode file, and once LTO codegen hands back the real signature it splits the
+         symbol into variants whose table-slot relocation resolves to the null slot.
+         Non-LTO links report zero of these warnings.
+         Fix: keep the bitcode out of the FINAL link. Step 1 (LinkNativeLlvm) does the
+         LTO codegen and, via save-temps, leaves $(NativeBinary).lto.o — a normal wasm
+         object carrying real signatures. This step relinks from that object in place of
+         the first bitcode object (.0.o), so no signatures are guessed and no variants
+         are created. -nostartfiles because the LTO object already carries
+         crt1-reactor's _initialize. Plain wasm-ld run — under a second, and it inherits
+         every optimization step 1 did. -->
+    <Target Name="JournalLtoRelink" AfterTargets="LinkNativeLlvm"
+            Condition="'$(WasmLto)' == 'true' and '$(_targetOS)' == 'wasi'">
+        <ReadLinesFromFile File="$(NativeIntermediateOutputPath)link.rsp">
+            <Output TaskParameter="Lines" ItemName="_LtoLinkLine" />
+        </ReadLinesFromFile>
+        <ItemGroup>
+            <!-- Drop: every clang-compiled object (those are the bitcode inputs), the
+                 LTO-only flags, save-temps, and the output path — everything else
+                 (sysroot archives, ILC's own .o, exports, memory flags) carries over.
+                 The LTO object takes the POSITION of the first bitcode object (.0.o),
+                 not the end of the line: the sysroot -l archives are scanned in order
+                 and lazily, so with the object listed after them they get pulled to
+                 satisfy mmap/signal/getpid/… which the LTO object also defines ->
+                 duplicate symbol errors. Forward slashes because clang's response-file
+                 parser treats \ as an escape (a Windows path collapses).
+                 The regex replaces ONLY the .0.o line; other .N.o/.debug.o lines are
+                 matched for the condition but passed through (they are dropped instead:
+                 the condition keeps a line unless it is a bitcode object other than
+                 the .0). -->
+            <_LtoRelinkArg Include="$([System.Text.RegularExpressions.Regex]::Replace('%(_LtoLinkLine.Identity)', '&quot;.*\.0\.o&quot;$', '&quot;$(NativeBinary.Replace('\', '/')).lto.o&quot;'))"
+                Condition="
+                  !$([System.Text.RegularExpressions.Regex]::IsMatch('%(_LtoLinkLine.Identity)', '\.(\d+|debug)\.o&quot;$'))
+                  or $([System.Text.RegularExpressions.Regex]::IsMatch('%(_LtoLinkLine.Identity)', '\.0\.o&quot;$'))" />
+            <_LtoRelinkArg Remove="-flto;-O3;-Wl,--save-temps" />
+            <_LtoRelinkArg Remove="@(_LtoRelinkArg)" Condition="
+                $([System.String]::Copy('%(Identity)').StartsWith('-Wl,-mllvm'))
+                or $([System.String]::Copy('%(Identity)').StartsWith('-o '))" />
+            <_LtoRelinkArg Include="-nostartfiles" />
+            <_LtoRelinkArg Include="-o &quot;$(NativeBinary.Replace('\', '/'))&quot;" />
+        </ItemGroup>
+        <WriteLinesToFile File="$(NativeIntermediateOutputPath)link2.rsp" Lines="@(_LtoRelinkArg)" Overwrite="true" WriteOnlyWhenDifferent="false" />
+        <Message Importance="high" Text="[journal] LTO relink (bitcode-free final link): $(NativeBinary)" />
+        <Exec Command="$(CppCompiler) &quot;@$(NativeIntermediateOutputPath)link2.rsp&quot;" />
+        <!-- save-temps also drops a large amount of intermediate bitcode next to the
+             wasm; the .lto.o itself stays (it is the only thing this target needs). -->
+        <ItemGroup>
+            <_LtoTemp Include="$(NativeBinary).*.bc;$(NativeBinary).resolution.txt" />
+        </ItemGroup>
+        <Delete Files="@(_LtoTemp)" />
+    </Target>
+
+</Project>

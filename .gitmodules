@@ -1,0 +1,3 @@
+[submodule "external/classicuo-mods-sdk"]
+	path = external/classicuo-mods-sdk
+	url = https://github.com/ClassicUO/classicuo-mods-sdk
