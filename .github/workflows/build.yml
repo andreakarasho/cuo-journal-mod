@@ -39,9 +39,17 @@ jobs:
       - name: Package
         id: package
         run: |
+          # On a tag, stamp mod.json with the tag's version (the registry entry,
+          # mod.json and the tag all have to agree, and the registry wants a bare
+          # MAJOR.MINOR.PATCH).
+          version="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF" != "${GITHUB_REF#refs/tags/}" ]; then
+            python3 -c "import json,sys;p='dist/journal/mod.json';m=json.load(open(p));m['version']=sys.argv[1];json.dump(m,open(p,'w'),indent=2)" "$version"
+          fi
           cd dist/journal
           zip -r ../../journal.zip mod.json mod.wasm
           cd ../..
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum journal.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           ls -l journal.zip
 
@@ -66,7 +74,7 @@ jobs:
             ```json
             {
               "name": "journal",
-              "version": "${{ github.ref_name }}",
+              "version": "${{ steps.package.outputs.version }}",
               "abi": "2",
               "description": "Tabbed, resizable system-log window",
               "authors": ["andreakarasho"],
