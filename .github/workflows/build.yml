@@ -1,0 +1,66 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # The ILC.LLVM packages the wasi-wasm publish pulls live on the dnceng
+      # feeds; nuget.config in the repo root already lists them.
+      - name: Build (LTO, stripped)
+        run: make build
+
+      - name: Package
+        id: package
+        run: |
+          cd dist/journal
+          zip -r ../../journal.zip mod.json mod.wasm
+          cd ../..
+          echo "sha256=$(sha256sum journal.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          ls -l journal.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: journal
+          path: journal.zip
+
+      # A tag publishes the zip the mod registry downloads. The release body
+      # carries the sha256 the registry entry has to match
+      # (github.com/ClassicUO/classicuo-mods -> mods/journal.json).
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: journal.zip
+          body: |
+            `journal.zip` sha256: `${{ steps.package.outputs.sha256 }}`
+
+            Registry entry (`mods/journal.json` in ClassicUO/classicuo-mods):
+
+            ```json
+            {
+              "name": "journal",
+              "version": "${{ github.ref_name }}",
+              "abi": "2",
+              "description": "Tabbed, resizable system-log window",
+              "authors": ["andreakarasho"],
+              "repository": "https://github.com/andreakarasho/cuo-journal-mod",
+              "license": "BSD-2-Clause",
+              "download": "https://github.com/andreakarasho/cuo-journal-mod/releases/download/${{ github.ref_name }}/journal.zip",
+              "sha256": "${{ steps.package.outputs.sha256 }}"
+            }
+            ```
