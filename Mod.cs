@@ -1,13 +1,17 @@
 // cuo-journal-mod — the ClassicUO 2.0 system-log window, as a mod.
 //
 // A tabbed, resizable, lockable message log that replaces the client's built-in
-// bottom-left scroll (turn that off in Options -> Interface -> System Log ->
-// "Built-in message log", or the two will overlap).
+// bottom-left scroll — mod.json declares `"replaces": ["cuo:ui/system-log"]`, so
+// the client takes its own window down while this is installed and puts it back
+// when it isn't. No options trip, and the two never stack.
 //
 // Everything it needs is host surface, no bespoke hooks:
 //   * lines arrive as cuo:chat/message triggers with Kind == 1 (the system log
 //     channel; Kind 0 is overhead speech and is ignored here);
 //   * the window is plain cuo:ui/* nodes — no custom rendering;
+//   * lines carry cuo:ui/text-hue, so the host paints them exactly the way it
+//     paints its own log: the server's hue baked in, legacy black border, and
+//     the ascii/unicode font split taken from the hue the server sent;
 //   * dragging is cuo:ui/movable, resizing is cuo:ui/resizable (the host owns
 //     both gestures — a mod must never do rect math off the raw mouse), and
 //   * cuo:ui/no-right-click-close keeps a stray right-click from closing it.
@@ -68,8 +72,6 @@ public sealed class JournalMod : Mod
         public float Expire;
         public ushort Hue;
         public ushort FontId;         // UO font id, | AsciiFlag when the server sent ascii
-        public Color Color = Color.Rgba(205, 210, 224, 255);
-        public bool Resolved;
     }
 
     readonly List<Line> _lines = new();
@@ -162,7 +164,6 @@ public sealed class JournalMod : Mod
             last.Text = $"{text} [{last.Count}]";
             last.Hue = hue;
             last.FontId = fontId;
-            last.Resolved = false;
             last.Expire = _now + Lifetime;
             _dirty = true;
             return;
@@ -502,37 +503,19 @@ public sealed class JournalMod : Mod
             if (!used) continue;
 
             var line = picked[slot - (LineSlots - picked.Count)];
-            if (!line.Resolved)
-            {
-                // Two colour conventions, one per font set. ASCII glyphs are
-                // baked already-hued by the host (partial hues and all), and it
-                // reads the hue back out of the colour's R/G bytes rather than
-                // tinting — so an ascii line passes the raw hue through packed.
-                // Unicode glyphs are white and take a real tint, so the host
-                // resolves the hue to RGB for us (the cuo hue_color import).
-                // Either way it's cached per line: a guest round-trip, not a
-                // table lookup.
-                line.Color = (line.FontId & AsciiFlag) != 0
-                    ? Color.Rgba((byte)(line.Hue & 0xFF), (byte)(line.Hue >> 8), 0, 255)
-                    : line.Hue != 0 ? ctx.Ui.HueColor(line.Hue) : TabColor(line.Tab);
-                line.Resolved = true;
-            }
+            // Hand the host the RAW server hue and let it paint the line exactly as
+            // the built-in log does — baked colour, legacy black border, and the
+            // ascii/unicode split resolved from FontId. Converting the hue here
+            // instead would be both flatter (no border) and wrong: hue_color answers
+            // GetPolygoneColor(30, hue + 1), the wire convention chat and nameplates
+            // use, while text baking answers GetPolygoneColor(30, hue) — one table
+            // entry apart. Letting the host do it also drops a guest round-trip per
+            // line, so there is nothing left to cache.
             cmds.Insert(ent, new Text { Value = line.Text });
             cmds.Insert(ent, new TextFont { FontId = line.FontId, Size = 13 });
-            cmds.Insert(ent, new TextColor { Value = line.Color });
+            cmds.Insert(ent, new TextHue { Value = line.Hue });
         }
     }
-
-    // Fallback for an unhued (hue 0) UNICODE line: colour it by channel. Ascii
-    // lines never land here — hue 0 there means white, the same as the built-in
-    // log, and the colour bytes are carrying the hue anyway.
-    static Color TabColor(int tab) => tab switch
-    {
-        3 => Color.Rgba(120, 190, 255, 255), // party
-        4 => Color.Rgba(140, 230, 150, 255), // guild / alliance
-        2 => Color.Rgba(245, 245, 245, 255), // chat
-        _ => Color.Rgba(205, 210, 224, 255), // system
-    };
 
     // ---- lock / persistence ---------------------------------------------
 
