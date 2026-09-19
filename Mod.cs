@@ -28,6 +28,15 @@ public sealed class JournalMod : Mod
     const float MinW = 140f, MinH = 60f, MaxW = 900f, MaxH = 700f;
     const ushort UiFont = 1;          // unicode UI font (RGB-tinted)
     const float LineH = 15f;
+    // Bottom-right resize band. The HOST owns the gesture (UiResizable.Grip
+    // below) and puts its hit square flush in the corner, so the visible grip
+    // uses the same size and the same origin — a grip you can see but not grab
+    // (or the reverse) is worse than none.
+    const float GripSize = 10f;
+    // Bit on TextFont.FontId selecting the UO ASCII font set instead of the
+    // unicode one — the host's UoFontRuntime.AsciiFlag. Server text says which
+    // set it was sent for, and the built-in log honours it; so does this.
+    const ushort AsciiFlag = 0x80;
     const int LineSlots = 40;         // pre-spawned text nodes (the visible window)
     const int MaxLines = 60;          // retained history
     const float Lifetime = 10f;       // seconds a line shows while the window is idle
@@ -43,6 +52,7 @@ public sealed class JournalMod : Mod
     const string TabsBox = "journal.tabs";
     const string Area = "journal.area";
     const string LockBtn = "journal.lock";
+    const string Grip = "journal.grip";
 
     static string TabName(int i) => $"journal.tab{i}";
     static string LineName(int i) => $"journal.line{i}";
@@ -51,10 +61,13 @@ public sealed class JournalMod : Mod
 
     sealed class Line
     {
-        public string Text = "";
+        public string BaseText = "";  // as received, without the repeat suffix
+        public string Text = "";      // what gets drawn (BaseText, or "BaseText [N]")
+        public int Count = 1;
         public int Tab;
         public float Expire;
         public ushort Hue;
+        public ushort FontId;         // UO font id, | AsciiFlag when the server sent ascii
         public Color Color = Color.Rgba(205, 210, 224, 255);
         public bool Resolved;
     }
@@ -90,7 +103,8 @@ public sealed class JournalMod : Mod
         {
             if (t.Event.Kind != 1 || string.IsNullOrEmpty(t.Event.Text))
                 return;
-            Append(t.Event.Text, TabOf(t.Event.MessageType), t.Event.Hue);
+            Append(t.Event.Text, TabOf(t.Event.MessageType), t.Event.Hue,
+                   t.Event.Font, t.Event.IsUnicode);
         });
 
         m.AddSystem((Commands cmds, ModContext ctx) => Tick(cmds, ctx)).InStage(Stage.Update).Label("journal-tick");
@@ -132,18 +146,38 @@ public sealed class JournalMod : Mod
         _ => 1,
     };
 
-    void Append(string text, int tab, ushort hue)
+    void Append(string text, int tab, ushort hue, byte font, bool isUnicode)
     {
-        // Collapse an immediate repeat, like the built-in log.
-        if (_lines.Count > 0 && _lines[^1].Text == text)
+        // The server picks the font set per message; the built-in log renders
+        // each line with the one it was sent for, and so does this.
+        var fontId = (ushort)(isUnicode ? font : font | AsciiFlag);
+
+        // Collapse an immediate repeat into "text [N]", like the built-in log —
+        // a spammed line shouldn't scroll the window away. Hue/font follow the
+        // newest copy, so a repeat that changed colour still reads correctly.
+        if (_lines.Count > 0 && _lines[^1].BaseText == text)
         {
-            _lines[^1].Expire = _now + Lifetime;
+            var last = _lines[^1];
+            last.Count++;
+            last.Text = $"{text} [{last.Count}]";
+            last.Hue = hue;
+            last.FontId = fontId;
+            last.Resolved = false;
+            last.Expire = _now + Lifetime;
             _dirty = true;
             return;
         }
         if (_lines.Count >= MaxLines)
             _lines.RemoveAt(0);
-        _lines.Add(new Line { Text = text, Tab = tab, Hue = hue, Expire = _now + Lifetime });
+        _lines.Add(new Line
+        {
+            BaseText = text,
+            Text = text,
+            Tab = tab,
+            Hue = hue,
+            FontId = fontId,
+            Expire = _now + Lifetime,
+        });
         _dirty = true;
     }
 
@@ -292,7 +326,23 @@ public sealed class JournalMod : Mod
                 .With(new UiName { Value = LineName(i) })
                 .ChildOf(area);
         }
+
+        // Resize grip. Purely a handle to look at — ApplyLock's UiResizable is
+        // what actually resizes, and the host's grab band is this same corner
+        // square. Chrome, and unlocked-only: a locked window can't be resized,
+        // so it must not advertise a grip (Paint drives both).
+        cmds.Spawn(Grip)
+            .With(GripNode(_w, _h))
+            .With(new BackgroundColor { Value = Color.Rgba(96, 102, 120, 0) })
+            .With(BorderRadius.All(3))
+            .With(new UiName { Value = Grip })
+            .ChildOf(root);
     }
+
+    // Flush to the bottom-right corner — UiResizablePlugin's hit square is
+    // (Left + Width - Grip, Top + Height - Grip), so no inset here either.
+    static Node GripNode(float w, float h)
+        => Node.Abs(w - GripSize, h - GripSize, GripSize, GripSize);
 
     static Node Row(float x, float y, float w, float h)
     {
@@ -416,6 +466,14 @@ public sealed class JournalMod : Mod
         // absolute children keep their own size). Only on a real resize.
         if (sizeChanged && ctx.Entity(Area) is { } area)
             cmds.Insert(area, Column(Pad, TabH, _w - Pad * 2f, _h - TabH - 2f));
+
+        if (ctx.Entity(Grip) is { } grip)
+        {
+            cmds.Insert(grip, new BackgroundColor { Value = Color.Rgba(96, 102, 120, Alpha(235)) });
+            var g = GripNode(_w, _h);
+            g.Display = alpha > 0 && !_locked ? Display.Flex : Display.None;
+            cmds.Insert(grip, g);
+        }
     }
 
     byte Alpha(int full) => (byte)Math.Clamp(full * _fade, 0f, 255f);
@@ -446,18 +504,28 @@ public sealed class JournalMod : Mod
             var line = picked[slot - (LineSlots - picked.Count)];
             if (!line.Resolved)
             {
-                // The host resolves the UO hue for us (cuo hue_color import) — the
-                // same tint it would put on the glyph itself. Cached per line: the
-                // import is a guest round-trip, not a table lookup.
-                line.Color = line.Hue != 0 ? ctx.Ui.HueColor(line.Hue) : TabColor(line.Tab);
+                // Two colour conventions, one per font set. ASCII glyphs are
+                // baked already-hued by the host (partial hues and all), and it
+                // reads the hue back out of the colour's R/G bytes rather than
+                // tinting — so an ascii line passes the raw hue through packed.
+                // Unicode glyphs are white and take a real tint, so the host
+                // resolves the hue to RGB for us (the cuo hue_color import).
+                // Either way it's cached per line: a guest round-trip, not a
+                // table lookup.
+                line.Color = (line.FontId & AsciiFlag) != 0
+                    ? Color.Rgba((byte)(line.Hue & 0xFF), (byte)(line.Hue >> 8), 0, 255)
+                    : line.Hue != 0 ? ctx.Ui.HueColor(line.Hue) : TabColor(line.Tab);
                 line.Resolved = true;
             }
             cmds.Insert(ent, new Text { Value = line.Text });
+            cmds.Insert(ent, new TextFont { FontId = line.FontId, Size = 13 });
             cmds.Insert(ent, new TextColor { Value = line.Color });
         }
     }
 
-    // Fallback for an unhued (hue 0) line: colour it by channel.
+    // Fallback for an unhued (hue 0) UNICODE line: colour it by channel. Ascii
+    // lines never land here — hue 0 there means white, the same as the built-in
+    // log, and the colour bytes are carrying the hue anyway.
     static Color TabColor(int tab) => tab switch
     {
         3 => Color.Rgba(120, 190, 255, 255), // party
@@ -484,7 +552,7 @@ public sealed class JournalMod : Mod
         {
             MinW = MinW, MinH = MinH,
             MaxW = MaxW, MaxH = MaxH,
-            Grip = 10f,
+            Grip = GripSize,   // same square the visible grip draws
         });
     }
 

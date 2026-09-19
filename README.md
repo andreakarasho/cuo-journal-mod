@@ -11,7 +11,12 @@ message log for the bottom-left of the screen.
   shows, instead of only the lines still inside their 10s.
 * **Lock** — the `LOCK` / `MOVE` button. Locked (the default) the window can't
   be dragged or resized; only the tabs stay clickable.
-* **Resize** — drag the bottom-right corner while unlocked.
+* **Resize** — drag the grip in the bottom-right corner while unlocked (it
+  shows with the rest of the chrome, and only when unlocked).
+* **UO fonts** — every line renders in the font set the server sent it for,
+  ASCII or unicode, like the built-in log.
+* **Repeats collapse** — a line identical to the one before it becomes
+  `text [2]`, `text [3]`… instead of scrolling the window away.
 * Position, size, lock state and the active tab persist in the mod's storage.
 
 ## Build
@@ -40,10 +45,20 @@ Release and prints its sha256 plus the ready-made registry entry for
 [ClassicUO/classicuo-mods](https://github.com/ClassicUO/classicuo-mods) —
 open a PR there with `mods/journal.json` to list the mod.
 
-## Turn the built-in log off
+## It replaces the built-in log
 
-The client draws its own bottom-left log; with the mod loaded you'd see both.
-Switch it off in **Options → Interface → System Log → "Built-in message log"**.
+The client draws its own bottom-left log. `mod.json` declares
+
+```json
+"ruleset": { "replaces": ["cuo:ui/system-log"] }
+```
+
+so the client takes that window down for as long as this mod is installed and
+enabled — no options trip, and the two never stack. Disable or uninstall the
+mod and the built-in log comes straight back.
+
+**Options → Interface → System Log → "Built-in message log"** still exists; it
+turns the built-in log off when no mod is replacing it.
 
 ## How it works
 
@@ -56,5 +71,6 @@ No bespoke host hooks — everything is existing mod surface:
 | drag | `cuo:ui/movable` (+ `cuo:ui/no-right-click-close`, so a stray right-click can't close it) |
 | resize | `cuo:ui/resizable` — the host owns the gesture; a mod must never do rect math off the raw mouse |
 | hover / fade | `cuo:input/mouse` + `cuo:engine/time` |
-| line colour | the `hue_color` host import — the server's UO hue resolved to RGB, the same tint the host would paint the glyph with |
+| line font | `cuo:ui/text-font` — `FontId` is the server's font index, `\| 0x80` for the UO ASCII set (the host's `AsciiFlag`); `Size` is ignored, UO bitmap fonts are fixed-size |
+| line colour | unicode lines: the `hue_color` host import — the server's UO hue resolved to RGB, the same tint the host would paint the glyph with. ASCII lines: the raw hue packed into the colour's R/G bytes, because the host bakes the hue into those glyphs instead of tinting them |
 | persistence | per-mod storage (`Data/Mods/journal/storage.json`) |
