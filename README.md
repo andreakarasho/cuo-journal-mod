@@ -50,7 +50,7 @@ open a PR there with `mods/journal.json` to list the mod.
 The client draws its own bottom-left log. `mod.json` declares
 
 ```json
-"ruleset": { "replaces": ["cuo:ui/system-log"] }
+"replaces": ["cuo:ui/system-log"]
 ```
 
 so the client takes that window down for as long as this mod is installed and
