@@ -43,7 +43,10 @@ public sealed class JournalMod : Mod
     const ushort AsciiFlag = 0x80;
     const int LineSlots = 40;         // pre-spawned text nodes (the visible window)
     const int MaxLines = 60;          // retained history
-    const float Lifetime = 10f;       // seconds a line shows while the window is idle
+    // How long a line shows while the window is idle. MILLISECONDS: cuo:engine/time
+    // hands out Total as a monotonic ms clock (and Frame as seconds — they differ).
+    // Same 10s the client gives its own log (TIME_DISPLAY_SYSTEM_MESSAGE_TEXT).
+    const float Lifetime = 10_000f;
     const float FadeSpeed = 6f;       // per second
     const int IdleZ = 1;              // below every gump, like the built-in log
     const int HoverZ = 30000;         // above them while the cursor is on it
@@ -80,6 +83,10 @@ public sealed class JournalMod : Mod
     bool _loaded;
     bool _dirty = true;          // lines/tab changed — repaint the text column
     bool _lastShowAll;
+    // Soonest Expire among the lines currently on an IDLE window, so the tick can
+    // spot "a line just aged out" with one compare. float.MaxValue = nothing to wait
+    // for (window hovered, or no fresh lines left).
+    float _nextExpire = float.MaxValue;
 
     float _x = 6f, _y = 320f, _w = 320f, _h = 150f;
     bool _locked = true;
@@ -210,8 +217,8 @@ public sealed class JournalMod : Mod
         }
 
         var time = ctx.Resource<Time>();
-        var dt = time?.Frame ?? 0.016f;
-        _now = time?.Total ?? (_now + dt);
+        var dt = time?.Frame ?? 0.016f;          // seconds
+        _now = time?.Total ?? (_now + dt * 1000f); // milliseconds
 
         if (!_loaded)
         {
@@ -244,6 +251,14 @@ public sealed class JournalMod : Mod
         Paint(cmds, ctx);
 
         var showAll = _fade >= 1f;
+        // A line ageing out of its lifetime changes what the idle window shows, and
+        // it is the one change no event announces — without this the column keeps a
+        // dead line on screen until the next message or hover happens to repaint it.
+        // PaintLines leaves the next interesting moment behind so this stays a float
+        // compare per frame rather than a scan.
+        if (!showAll && _now >= _nextExpire)
+            _dirty = true;
+
         if (_dirty || showAll != _lastShowAll)
         {
             _lastShowAll = showAll;
@@ -483,12 +498,22 @@ public sealed class JournalMod : Mod
     {
         // Newest last: walk the tail of the list that passes the tab + freshness
         // filter, oldest first, and fill the slots bottom-up.
+        //
+        // Along the way, remember when the SHOWN set next changes by itself — the
+        // soonest expiry among the lines actually on screen. Tick watches that one
+        // value instead of re-scanning, and while hovered nothing expires out of
+        // view at all, so there is nothing to watch.
+        _nextExpire = float.MaxValue;
         var picked = new List<Line>(LineSlots);
         for (var i = _lines.Count - 1; i >= 0 && picked.Count < LineSlots; i--)
         {
             var line = _lines[i];
             if (_tab != 0 && line.Tab != _tab) continue;
-            if (!showAll && line.Expire <= _now) continue;
+            if (!showAll)
+            {
+                if (line.Expire <= _now) continue;
+                if (line.Expire < _nextExpire) _nextExpire = line.Expire;
+            }
             picked.Add(line);
         }
         picked.Reverse();
