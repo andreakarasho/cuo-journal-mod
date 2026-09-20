@@ -48,6 +48,7 @@ public sealed class JournalMod : Mod
     // Same 10s the client gives its own log (TIME_DISPLAY_SYSTEM_MESSAGE_TEXT).
     const float Lifetime = 10_000f;
     const float FadeSpeed = 6f;       // per second
+    const int ScrollStep = 3;         // lines per wheel notch
     const int IdleZ = 1;              // below every gump, like the built-in log
     const int HoverZ = 30000;         // above them while the cursor is on it
     // cuo:game/state — 0 Loading, 1 LoginScreen, 2 ServerSelection,
@@ -94,6 +95,9 @@ public sealed class JournalMod : Mod
     float _x = 6f, _y = 320f, _w = 320f, _h = 150f;
     bool _locked = true;
     int _tab;
+    // Lines between the bottom of the column and the newest line in the tab —
+    // 0 = pinned to the newest, which is where an idle window always sits.
+    int _scroll;
     float _fade;
     bool _wasHovered;
     string _savedState = "";
@@ -133,6 +137,7 @@ public sealed class JournalMod : Mod
                 if (_tab != i)
                 {
                     _tab = i;
+                    _scroll = 0;     // a different channel, a different history
                     _dirty = true;
                     Save(ctx);
                 }
@@ -178,6 +183,13 @@ public sealed class JournalMod : Mod
             _dirty = true;
             return;
         }
+        // Scrolled back into the history: a new arrival must not shove the view
+        // down a line. Only a line this tab shows counts — the others aren't in
+        // the column being scrolled. PaintLines clamps, so the MaxLines trim
+        // below can't leave this pointing past the oldest line.
+        if (_scroll > 0 && (_tab == 0 || tab == _tab))
+            _scroll++;
+
         if (_lines.Count >= MaxLines)
             _lines.RemoveAt(0);
         _lines.Add(new Line
@@ -267,6 +279,23 @@ public sealed class JournalMod : Mod
         var hovered = inside || (_wasHovered && mouse is { Left: true });
         _wasHovered = hovered;
 
+        // Wheel over the window walks back through the retained history. Hovered
+        // only: idle, the window is a notification strip showing the newest lines
+        // and nothing else, so it drops back to the bottom when the cursor leaves.
+        // cuo:input/mouse hands out the PRE-consume delta in notches (+ up), and
+        // plain wheel isn't a client gesture (zoom wants ctrl), so nothing to
+        // fight over — and a mod can't consume input anyway.
+        if (hovered && mouse is { Wheel: var wheel } && wheel != 0f)
+        {
+            _scroll += (int)MathF.Round(wheel) * ScrollStep;
+            _dirty = true;
+        }
+        else if (!hovered && _scroll != 0)
+        {
+            _scroll = 0;
+            _dirty = true;
+        }
+
         var target = hovered ? 1f : 0f;
         var step = dt * FadeSpeed;
         _fade = MathF.Abs(target - _fade) <= step ? target : _fade + MathF.CopySign(step, target - _fade);
@@ -331,6 +360,7 @@ public sealed class JournalMod : Mod
         _loaded = false;            // restore the box + re-apply the lock on respawn
         _dirty = true;
         _nextExpire = float.MaxValue;
+        _scroll = 0;
         _fade = 0f;
         _wasHovered = false;
         // Paint short-circuits on "nothing moved", so the cached values have to look
@@ -579,11 +609,24 @@ public sealed class JournalMod : Mod
         // value instead of re-scanning, and while hovered nothing expires out of
         // view at all, so there is nothing to watch.
         _nextExpire = float.MaxValue;
+
+        // Scroll offset, clamped against what this tab actually holds — the wheel
+        // is free to run past either end, and one line always stays on screen so
+        // the window never goes blank. 60 lines, so counting beats tracking it.
+        var matching = 0;
+        foreach (var l in _lines)
+            if (_tab == 0 || l.Tab == _tab) matching++;
+        _scroll = Math.Clamp(_scroll, 0, Math.Max(0, matching - 1));
+        // Idle shows the newest lines and only those: there is nothing to scroll
+        // when what you can see is "whatever arrived in the last 10 seconds".
+        var skip = showAll ? _scroll : 0;
+
         var picked = new List<Line>(LineSlots);
         for (var i = _lines.Count - 1; i >= 0 && picked.Count < LineSlots; i--)
         {
             var line = _lines[i];
             if (_tab != 0 && line.Tab != _tab) continue;
+            if (skip > 0) { skip--; continue; }
             if (!showAll)
             {
                 if (line.Expire <= _now) continue;
