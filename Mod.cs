@@ -50,6 +50,9 @@ public sealed class JournalMod : Mod
     const float FadeSpeed = 6f;       // per second
     const int IdleZ = 1;              // below every gump, like the built-in log
     const int HoverZ = 30000;         // above them while the cursor is on it
+    // cuo:game/state — 0 Loading, 1 LoginScreen, 2 ServerSelection,
+    // 3 CharacterSelection, 4 CharacterCreation, 5 LoginError, 6 GameScreen.
+    const byte GameScreen = 6;
 
     // ---- entity names ----------------------------------------------------
     // Commands.Spawn(name) hands the real ecs id back through ctx.Entity(name)
@@ -195,6 +198,20 @@ public sealed class JournalMod : Mod
 
     void Tick(Commands cmds, ModContext ctx)
     {
+        // A message log belongs to the world, not to the login and character-select
+        // screens. The client gates its own the same way — SystemLogGumpPlugin runs
+        // its spawn system under RunIf(GameScreen) and despawns OnExit — and a mod
+        // has no RunIf, so the check lives here. Resource<T> of a struct hands back
+        // default when the host has no answer, and default is Current = 0 = Loading —
+        // which is the reading we want anyway: better no window than one stranded
+        // over the login screen.
+        if (ctx.Resource<GameStateDto>().Current != GameScreen)
+        {
+            if (_spawned)
+                Teardown(cmds, ctx);
+            return;
+        }
+
         if (!_spawned)
         {
             LoadState(ctx);
@@ -265,6 +282,43 @@ public sealed class JournalMod : Mod
             _dirty = false;
             PaintLines(cmds, ctx, showAll);
         }
+    }
+
+    // Leaving the world: take the window down and come back to a clean slate, so
+    // logging back in rebuilds it from storage exactly like a fresh login.
+    // The retained lines survive — the client keeps its SystemMessages store across
+    // the same transition, and a log that forgets on every logout is no log.
+    void Teardown(Commands cmds, ModContext ctx)
+    {
+        cmds.Despawn(Root);   // takes the subtree with it, host-side
+
+        // The subtree despawn frees the ROOT's name only. A child name left pointing
+        // at a dead id would, if the host ever recycles ids, have us writing this
+        // window's components onto somebody else's entity — so drop every binding.
+        // Spawn() re-registers all of them.
+        ctx.Forget(Strip);
+        ctx.Forget(TabsBox);
+        ctx.Forget(Area);
+        ctx.Forget(LockBtn);
+        ctx.Forget(Grip);
+        for (var i = 0; i < TabLabels.Length; i++)
+            ctx.Forget(TabName(i));
+        for (var i = 0; i < LineSlots; i++)
+            ctx.Forget(LineName(i));
+
+        _spawned = false;
+        _loaded = false;            // restore the box + re-apply the lock on respawn
+        _dirty = true;
+        _nextExpire = float.MaxValue;
+        _fade = 0f;
+        _wasHovered = false;
+        // Paint short-circuits on "nothing moved", so the cached values have to look
+        // impossible or the rebuilt window would keep the old chrome for a frame.
+        _paintedAlpha = 255;
+        _paintedZ = -1;
+        _paintedTab = -1;
+        _paintedW = 0f;
+        _paintedH = 0f;
     }
 
     // ---- ui --------------------------------------------------------------
