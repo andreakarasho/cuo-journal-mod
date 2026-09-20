@@ -232,6 +232,17 @@ public sealed class JournalMod : Mod
             _w = node.Width.Value;
             _h = node.Height.Value;
         }
+        else
+        {
+            // No Node on the root we spawned = the host deleted our subtree without
+            // telling us. That is what disable→enable does (ModdingPlugin despawns
+            // every entity in the mod's slot, then only re-runs ModStartup — and this
+            // window is built in Update, not Startup), so without this the mod ticks
+            // on forever writing components at a dead id and the window never comes
+            // back until a client restart. Reset and let the next tick rebuild it.
+            Forget(ctx);
+            return;
+        }
 
         var time = ctx.Resource<Time>();
         var dt = time?.Frame ?? 0.016f;          // seconds
@@ -291,11 +302,21 @@ public sealed class JournalMod : Mod
     void Teardown(Commands cmds, ModContext ctx)
     {
         cmds.Despawn(Root);   // takes the subtree with it, host-side
+        Forget(ctx);
+    }
 
+    // Drop every binding + cached value tied to a window that no longer exists, so
+    // the next tick spawns a fresh one. Split out of Teardown because the host can
+    // delete the subtree on its own (disable/enable), and then there is nothing left
+    // to despawn — only the guest-side bookkeeping to clear.
+    void Forget(ModContext ctx)
+    {
         // The subtree despawn frees the ROOT's name only. A child name left pointing
         // at a dead id would, if the host ever recycles ids, have us writing this
         // window's components onto somebody else's entity — so drop every binding.
-        // Spawn() re-registers all of them.
+        // Spawn() re-registers all of them. Root included — Despawn(name) drops its
+        // binding, but the host-despawn path never went through Despawn at all.
+        ctx.Forget(Root);
         ctx.Forget(Strip);
         ctx.Forget(TabsBox);
         ctx.Forget(Area);
