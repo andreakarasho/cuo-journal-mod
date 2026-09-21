@@ -1,9 +1,10 @@
 // cuo-journal-mod — the ClassicUO 2.0 system-log window, as a mod.
 //
 // A tabbed, resizable, lockable message log that replaces the client's built-in
-// bottom-left scroll — mod.json declares `"replaces": ["cuo:ui/system-log"]`, so
-// the client takes its own window down while this is installed and puts it back
-// when it isn't. No options trip, and the two never stack.
+// bottom-left scroll — the window root carries `cuo:ui/supersedes`
+// ("cuo:ui/system-log"), so the client takes its own log down while this window
+// exists and puts it back when it doesn't. No options trip, the two never
+// stack, and disabling the mod reverts it with nothing to undo.
 //
 // Everything it needs is host surface, no bespoke hooks:
 //   * lines arrive as cuo:chat/message triggers with Kind == 1 (the system log
@@ -14,7 +15,8 @@
 //     the ascii/unicode font split taken from the hue the server sent;
 //   * dragging is cuo:ui/movable, resizing is cuo:ui/resizable (the host owns
 //     both gestures — a mod must never do rect math off the raw mouse), and
-//   * cuo:ui/no-right-click-close keeps a stray right-click from closing it.
+//   * cuo:ui/no-right-click-close keeps a stray right-click from closing it, and
+//     cuo:ui/supersedes is how it claims the host's system-log feature.
 //
 // Idle the window is invisible: the panel fades out and only the text is left,
 // and since mod nodes carry no UiCustom they are never a hit target, so clicks
@@ -386,6 +388,11 @@ public sealed class JournalMod : Mod
             // Right-click must not close the log; drag/resize are added by
             // ApplyLock once the saved lock state is known.
             .With<UiNoRightClickClose>()
+            // THIS window is the system log while it exists: the client hides its
+            // own bottom-left scroll and brings it back the moment this entity is
+            // gone (mod disabled/unloaded -> host despawns our entities). Live
+            // claim, so nothing has to be declared in mod.json or undone on exit.
+            .With(new ModSupersedes { Feature = "cuo:ui/system-log" })
             .With<UiContainsByBounds>()
             .With(new UiName { Value = Root });
 
