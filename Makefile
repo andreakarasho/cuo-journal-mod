@@ -13,11 +13,10 @@ build:
 	dotnet publish ecs-journal.csproj -c $(CFG) -p:OptimizationPreference=Speed -p:IlcPgoOptimize=false -p:WasmLto=$(LTO)
 	mkdir -p $(OUT)
 	cp bin/$(CFG)/net10.0/wasi-wasm/native/ecs_journal.wasm $(OUT)/mod.wasm
-	# replaces: the client takes its own system-log window down while this mod is
-	# installed and enabled, so the two never stack (host side:
-	# SystemLogGumpPlugin.ReplaceFeature). Top level, not in ruleset — ruleset is
-	# what the host permits the mod, this is what the mod claims about itself.
-	printf '{\n  "name": "journal",\n  "version": "0.2.3",\n  "wasm": "mod.wasm",\n  "replaces": ["cuo:ui/system-log"],\n  "ruleset": {}\n}\n' > $(OUT)/mod.json
+	# No "replaces" key: the claim on the client's system log is a LIVE component
+	# on the window root (cuo:ui/supersedes), so it comes and goes with the window
+	# instead of being a manifest fact the host has to track and undo.
+	printf '{\n  "name": "journal",\n  "version": "0.3.0",\n  "wasm": "mod.wasm",\n  "ruleset": {}\n}\n' > $(OUT)/mod.json
 	@echo ">> $(OUT)/mod.wasm"
 
 check:
