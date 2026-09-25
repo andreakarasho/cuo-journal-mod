@@ -7,8 +7,9 @@
 // stack, and disabling the mod reverts it with nothing to undo.
 //
 // Everything it needs is host surface, no bespoke hooks:
-//   * lines arrive as cuo:chat/message triggers with Kind == 1 (the system log
-//     channel; Kind 0 is overhead speech and is ignored here);
+//   * lines arrive as cuo:chat/message triggers: Kind 1 (the system log channel)
+//     and Kind 0 (overhead speech), taken the way the client's own journal takes
+//     them (Filters.Journalled / Format);
 //   * the window is plain cuo:ui/* nodes — no custom rendering;
 //   * lines carry cuo:ui/text-hue, so the host paints them exactly the way it
 //     paints its own log: the server's hue baked in, legacy black border, and
@@ -23,6 +24,11 @@
 // fall through to the world exactly like the built-in log. Hovering (or holding
 // a drag, or typing into chat) fades the panel + chrome back in and shows the
 // full retained history instead of just the lines still inside their 10s.
+//
+// The OPT button on the strip opens the options window: custom tabs (a name + a
+// filter) and rules (a filter + a new hue and/or hide). A filter is message type,
+// text-contains (case-insensitive) and hue, all optional — Filters.cs holds the
+// matching and the storage format, SDK-free so tests/ can check it.
 
 namespace CuoJournal;
 
@@ -66,20 +72,41 @@ public sealed class JournalMod : Mod
     const string Area = "journal.area";
     const string LockBtn = "journal.lock";
     const string Grip = "journal.grip";
+    const string OptBtn = "journal.optbtn";
+
+    // Options window. Separate root: it outlives journal rebuilds (adding a tab
+    // respawns the journal strip) and never fades.
+    const string Opt = "journal.opt";
+    const string OptClose = "journal.opt.close";
+    const string OptAddTab = "journal.opt.addtab";
+    const string OptAddRule = "journal.opt.addrule";
+    // ponytail: hard caps instead of a scrolling list, the window just grows.
+    const int MaxCustomTabs = 8, MaxRules = 10;
+    const float OptW = 460f, OptRowH = 18f, OptCapH = 14f, OptGap = 3f, OptPad = 6f;
+    const int OptZ = HoverZ + 1;
+    static string TabField(int i, string f) => $"journal.opt.t{i}.{f}";
+    static string RuleField(int i, string f) => $"journal.opt.r{i}.{f}";
 
     static string TabName(int i) => $"journal.tab{i}";
     static string LineName(int i) => $"journal.line{i}";
 
     static readonly string[] TabLabels = { "All", "Sys", "Chat", "Party", "Guild" };
 
+    readonly List<CustomTab> _tabs = new();
+    readonly List<Rule> _rules = new();
+    int TabCount => TabLabels.Length + _tabs.Count;
+    string TabLabel(int i) => i < TabLabels.Length ? TabLabels[i]
+        : _tabs[i - TabLabels.Length].Name is { Length: > 0 } n ? n : "?";
+
     sealed class Line
     {
         public string BaseText = "";  // as received, without the repeat suffix
         public string Text = "";      // what gets drawn (BaseText, or "BaseText [N]")
         public int Count = 1;
-        public int Tab;
+        public int Tab;               // built-in tab (1..4)
+        public byte Type;             // host MessageType, for the filters
         public float Expire;
-        public ushort Hue;
+        public ushort Hue;            // as the server sent it; rules recolour at paint
         public ushort FontId;         // UO font id, | AsciiFlag when the server sent ascii
     }
 
@@ -111,18 +138,25 @@ public sealed class JournalMod : Mod
     int _paintedZ = -1;
     int _paintedTab = -1;
     bool _paintedLocked;
+    bool _paintedOpt;
+
+    bool _optOpen;
+    bool _optSpawned;
+    bool _optRebuild;          // add/remove: despawn now, respawn next tick
     float _paintedW, _paintedH;
 
     public override void Setup(ModBuilder m)
     {
-        // Host system log -> our list. Kind 1 is the system channel; Kind 0 is
-        // overhead speech, which has its own place on screen.
+        // Host chat -> our list: the system channel (Kind 1) AND overhead speech
+        // (Kind 0), like the client's journal. The host routes each line to exactly
+        // one of the two, so nothing lands twice.
         m.AddObserver((On<ModChatMessage> t) =>
         {
-            if (t.Event.Kind != 1 || string.IsNullOrEmpty(t.Event.Text))
+            var e = t.Event;
+            if (string.IsNullOrEmpty(e.Text) || !Filters.Journalled(e.Kind, e.MessageType))
                 return;
-            Append(t.Event.Text, TabOf(t.Event.MessageType), t.Event.Hue,
-                   t.Event.Font, t.Event.IsUnicode);
+            Append(Filters.Format(e.Kind, e.MessageType, e.Name ?? "", e.Text), e.MessageType,
+                   Filters.TabOf(e.Kind, e.MessageType), e.Hue, e.Font, e.IsUnicode);
         });
 
         m.AddSystem((Commands cmds, ModContext ctx) => Tick(cmds, ctx)).InStage(Stage.Update).Label("journal-tick");
@@ -132,10 +166,11 @@ public sealed class JournalMod : Mod
         m.AddSystem((Query<Data, With<ModClicked>> clicked, Commands cmds, ModContext ctx) =>
         {
             if (!_spawned) return;
+            bool Hit(string name) => ctx.Entity(name) is { } e && clicked.Contains(e);
 
-            for (var i = 0; i < TabLabels.Length; i++)
+            for (var i = 0; i < TabCount; i++)
             {
-                if (ctx.Entity(TabName(i)) is not { } tabEnt || !clicked.Contains(tabEnt)) continue;
+                if (!Hit(TabName(i))) continue;
                 if (_tab != i)
                 {
                     _tab = i;
@@ -146,26 +181,38 @@ public sealed class JournalMod : Mod
                 return;
             }
 
-            if (ctx.Entity(LockBtn) is not { } lockEnt || !clicked.Contains(lockEnt)) return;
-            _locked = !_locked;
-            ApplyLock(cmds, ctx);
-            Save(ctx);
+            if (Hit(LockBtn))
+            {
+                _locked = !_locked;
+                ApplyLock(cmds, ctx);
+                Save(ctx);
+                return;
+            }
+
+            if (Hit(OptBtn) || (_optSpawned && Hit(OptClose)))
+            {
+                _optOpen = !_optOpen;
+                _optRebuild = true;
+                return;
+            }
+
+            if (_optSpawned)
+                OptClick(Hit, cmds, ctx);
         }).InStage(Stage.Update).Label("journal-clicks");
+
+        // Typing in an options field: the host's editor writes the field's Text, so
+        // a Changed<Text> query over our editable nodes is the whole edit feed.
+        m.AddSystem((Query<Data<Text>, Filter<Changed<Text>, With<EditableText>, With<ModEntity>>> edited, ModContext ctx, Commands cmds) =>
+        {
+            if (!_optSpawned) return;
+            foreach (var (e, text) in edited)
+                OptEdit(e, text.Value ?? "", cmds, ctx);
+        }).InStage(Stage.Update).Label("journal-opt-edit");
     }
 
     // ---- ingest ----------------------------------------------------------
 
-    static int TabOf(byte messageType) => messageType switch
-    {
-        // MessageType: 1 System, 2 Emote, 6 Party, 9 Guild, 10 Alliance, 3 Label,
-        // 4 Focus, 5 Whisper, 7 Yell, 8 Spell (host Game/Data/MessageType.cs).
-        6 => 3,
-        9 or 10 => 4,
-        2 or 5 or 7 or 8 => 2,
-        _ => 1,
-    };
-
-    void Append(string text, int tab, ushort hue, byte font, bool isUnicode)
+    void Append(string text, byte type, int tab, ushort hue, byte font, bool isUnicode)
     {
         // The server picks the font set per message; the built-in log renders
         // each line with the one it was sent for, and so does this.
@@ -180,30 +227,52 @@ public sealed class JournalMod : Mod
             last.Count++;
             last.Text = $"{text} [{last.Count}]";
             last.Hue = hue;
+            last.Type = type;
             last.FontId = fontId;
             last.Expire = _now + Lifetime;
             _dirty = true;
             return;
         }
-        // Scrolled back into the history: a new arrival must not shove the view
-        // down a line. Only a line this tab shows counts — the others aren't in
-        // the column being scrolled. PaintLines clamps, so the MaxLines trim
-        // below can't leave this pointing past the oldest line.
-        if (_scroll > 0 && (_tab == 0 || tab == _tab))
-            _scroll++;
-
-        if (_lines.Count >= MaxLines)
-            _lines.RemoveAt(0);
-        _lines.Add(new Line
+        var line = new Line
         {
             BaseText = text,
             Text = text,
             Tab = tab,
+            Type = type,
             Hue = hue,
             FontId = fontId,
             Expire = _now + Lifetime,
-        });
+        };
+        // Scrolled back into the history: a new arrival must not shove the view
+        // down a line. Only a line this tab shows counts — the others aren't in
+        // the column being scrolled. PaintLines clamps, so the MaxLines trim
+        // below can't leave this pointing past the oldest line.
+        if (_scroll > 0 && Shown(line))
+            _scroll++;
+
+        if (_lines.Count >= MaxLines)
+            _lines.RemoveAt(0);
+        _lines.Add(line);
         _dirty = true;
+    }
+
+    bool Matches(Filter f, Line l) => f.Matches(l.Type, l.BaseText, l.Hue);
+
+    // In the current tab and not hidden by a rule.
+    bool Shown(Line l)
+    {
+        foreach (var r in _rules)
+            if (r.Hide && Matches(r.Filter, l)) return false;
+        if (_tab == 0) return true;
+        return _tab < TabLabels.Length ? l.Tab == _tab : Matches(_tabs[_tab - TabLabels.Length].Filter, l);
+    }
+
+    // First rule with a colour that matches wins; otherwise the server's hue.
+    ushort HueOf(Line l)
+    {
+        foreach (var r in _rules)
+            if (r.Color >= 0 && Matches(r.Filter, l)) return (ushort)r.Color;
+        return l.Hue;
     }
 
     float _now;
@@ -223,6 +292,12 @@ public sealed class JournalMod : Mod
         {
             if (_spawned)
                 Teardown(cmds, ctx);
+            if (_optSpawned)
+            {
+                cmds.Despawn(Opt);
+                ForgetOpt(ctx);
+            }
+            _optOpen = false;
             return;
         }
 
@@ -254,9 +329,14 @@ public sealed class JournalMod : Mod
             // window is built in Update, not Startup), so without this the mod ticks
             // on forever writing components at a dead id and the window never comes
             // back until a client restart. Reset and let the next tick rebuild it.
+            // The options window went down with the rest of the slot.
             Forget(ctx);
+            ForgetOpt(ctx);
+            _optOpen = false;
             return;
         }
+
+        TickOpt(cmds, ctx);
 
         var time = ctx.Resource<Time>();
         var dt = time?.Frame ?? 0.016f;          // seconds
@@ -353,7 +433,8 @@ public sealed class JournalMod : Mod
         ctx.Forget(Area);
         ctx.Forget(LockBtn);
         ctx.Forget(Grip);
-        for (var i = 0; i < TabLabels.Length; i++)
+        ctx.Forget(OptBtn);
+        for (var i = 0; i < TabLabels.Length + MaxCustomTabs; i++)
             ctx.Forget(TabName(i));
         for (var i = 0; i < LineSlots; i++)
             ctx.Forget(LineName(i));
@@ -409,13 +490,13 @@ public sealed class JournalMod : Mod
             .With(new UiName { Value = TabsBox })
             .ChildOf(strip);
 
-        for (var i = 0; i < TabLabels.Length; i++)
+        for (var i = 0; i < TabCount; i++)
         {
             cmds.Spawn(TabName(i))
                 .With(TabNode())
                 .With(new BackgroundColor { Value = Color.Rgba(38, 41, 51, 0) })
                 .With(BorderRadius.All(3))
-                .With(new Text { Value = TabLabels[i] })
+                .With(new Text { Value = TabLabel(i) })
                 .With(new TextFont { FontId = UiFont, Size = 11 })
                 .With(new TextColor { Value = Color.Rgba(160, 164, 178, 0) })
                 .With(Interaction.None)
@@ -423,6 +504,18 @@ public sealed class JournalMod : Mod
                 .With(new UiName { Value = TabName(i) })
                 .ChildOf(tabs);
         }
+
+        cmds.Spawn(OptBtn)
+            .With(TabNode())
+            .With(new BackgroundColor { Value = Color.Rgba(48, 44, 52, 0) })
+            .With(BorderRadius.All(3))
+            .With(new Text { Value = "OPT" })
+            .With(new TextFont { FontId = UiFont, Size = 11 })
+            .With(new TextColor { Value = Color.Rgba(160, 164, 178, 0) })
+            .With(Interaction.None)
+            .With<UiNoWindowDrag>()
+            .With(new UiName { Value = OptBtn })
+            .ChildOf(strip);
 
         cmds.Spawn(LockBtn)
             .With(TabNode())
@@ -528,12 +621,13 @@ public sealed class JournalMod : Mod
     {
         var alpha = Alpha(255);
         if (alpha == _paintedAlpha && _tab == _paintedTab && _locked == _paintedLocked
-            && _w == _paintedW && _h == _paintedH)
+            && _optOpen == _paintedOpt && _w == _paintedW && _h == _paintedH)
             return;
         var sizeChanged = _w != _paintedW || _h != _paintedH;
         _paintedAlpha = alpha;
         _paintedTab = _tab;
         _paintedLocked = _locked;
+        _paintedOpt = _optOpen;
         _paintedW = _w;
         _paintedH = _h;
 
@@ -558,7 +652,7 @@ public sealed class JournalMod : Mod
             cmds.Insert(strip, row);
         }
 
-        for (var i = 0; i < TabLabels.Length; i++)
+        for (var i = 0; i < TabCount; i++)
         {
             if (ctx.Entity(TabName(i)) is not { } tab) continue;
             var active = i == _tab;
@@ -573,6 +667,22 @@ public sealed class JournalMod : Mod
                 Value = active
                     ? Color.Rgba(236, 238, 244, Alpha(255))
                     : Color.Rgba(160, 164, 178, Alpha(255)),
+            });
+        }
+
+        if (ctx.Entity(OptBtn) is { } optBtn)
+        {
+            cmds.Insert(optBtn, new TextColor
+            {
+                Value = _optOpen
+                    ? Color.Rgba(236, 238, 244, Alpha(255))
+                    : Color.Rgba(160, 164, 178, Alpha(255)),
+            });
+            cmds.Insert(optBtn, new BackgroundColor
+            {
+                Value = _optOpen
+                    ? Color.Rgba(74, 108, 158, Alpha(245))
+                    : Color.Rgba(48, 44, 52, Alpha(235)),
             });
         }
 
@@ -622,7 +732,7 @@ public sealed class JournalMod : Mod
         // the window never goes blank. 60 lines, so counting beats tracking it.
         var matching = 0;
         foreach (var l in _lines)
-            if (_tab == 0 || l.Tab == _tab) matching++;
+            if (Shown(l)) matching++;
         _scroll = Math.Clamp(_scroll, 0, Math.Max(0, matching - 1));
         // Idle shows the newest lines and only those: there is nothing to scroll
         // when what you can see is "whatever arrived in the last 10 seconds".
@@ -632,7 +742,7 @@ public sealed class JournalMod : Mod
         for (var i = _lines.Count - 1; i >= 0 && picked.Count < LineSlots; i--)
         {
             var line = _lines[i];
-            if (_tab != 0 && line.Tab != _tab) continue;
+            if (!Shown(line)) continue;
             if (skip > 0) { skip--; continue; }
             if (!showAll)
             {
@@ -663,8 +773,291 @@ public sealed class JournalMod : Mod
             // line, so there is nothing left to cache.
             cmds.Insert(ent, new Text { Value = line.Text });
             cmds.Insert(ent, new TextFont { FontId = line.FontId, Size = 13 });
-            cmds.Insert(ent, new TextHue { Value = line.Hue });
+            cmds.Insert(ent, new TextHue { Value = HueOf(line) });
         }
+    }
+
+    // ---- options window --------------------------------------------------
+
+    static readonly string[] TabFields = { "name", "type", "text", "hue", "del" };
+    static readonly string[] RuleFields = { "type", "text", "hue", "color", "hide", "del" };
+
+    void TickOpt(Commands cmds, ModContext ctx)
+    {
+        if (_optRebuild)
+        {
+            _optRebuild = false;
+            if (_optSpawned)
+            {
+                // Despawn now, spawn next tick: a name can't be re-bound in the same
+                // frame that frees it.
+                cmds.Despawn(Opt);
+                ForgetOpt(ctx);
+                return;
+            }
+        }
+        if (_optOpen && !_optSpawned)
+        {
+            SpawnOpt(cmds);
+            _optSpawned = true;
+        }
+    }
+
+    void ForgetOpt(ModContext ctx)
+    {
+        ctx.Forget(Opt);
+        ctx.Forget(OptClose);
+        ctx.Forget(OptAddTab);
+        ctx.Forget(OptAddRule);
+        for (var i = 0; i < MaxCustomTabs; i++)
+            foreach (var f in TabFields) ctx.Forget(TabField(i, f));
+        for (var i = 0; i < MaxRules; i++)
+            foreach (var f in RuleFields) ctx.Forget(RuleField(i, f));
+        _optSpawned = false;
+    }
+
+    void SpawnOpt(Commands cmds)
+    {
+        // Children: title, caption, tab rows, add, caption, rule rows, add.
+        var rows = _tabs.Count + _rules.Count;
+        var h = OptPad * 2f + OptRowH * (rows + 3) + OptCapH * 2f + OptGap * (rows + 4);
+        var box = Node.Abs(_x, Math.Max(0f, _y - h - 4f), OptW, h);
+        box.FlexDirection = FlexDirection.Column;
+        box.Padding = UiRect.Splat(Val.Px(OptPad));
+        box.Gap = Val.Px(OptGap);
+        var root = cmds.Spawn(Opt)
+            .With(box)
+            .With(new BackgroundColor { Value = Color.Rgba(18, 20, 26, 235) })
+            .With(BorderRadius.All(4))
+            .With(new GlobalZIndex { Value = OptZ })
+            .With<UiMovable>()
+            .With<UiNoRightClickClose>()
+            .With<UiContainsByBounds>()
+            .With(Interaction.None)
+            .With(new UiName { Value = Opt });
+
+        var title = OptRow(cmds, root);
+        OptLabel(cmds, title, "Journal options", OptW - OptPad * 2f - 28f, OptRowH, 236);
+        OptButton(cmds, title, OptClose, "X", 20f);
+
+        OptLabel(cmds, root, "Tabs:  name · type · text contains · hue", OptW, OptCapH, 150);
+        for (var i = 0; i < _tabs.Count; i++)
+        {
+            var t = _tabs[i];
+            var row = OptRow(cmds, root);
+            OptField(cmds, row, TabField(i, "name"), 90f, t.Name);
+            OptButton(cmds, row, TabField(i, "type"), Filters.TypeName(t.Filter.Type), 70f);
+            OptField(cmds, row, TabField(i, "text"), 170f, t.Filter.Text);
+            OptField(cmds, row, TabField(i, "hue"), 60f, Filters.HueText(t.Filter.Hue));
+            OptButton(cmds, row, TabField(i, "del"), "x", 20f);
+        }
+        OptButton(cmds, OptRow(cmds, root), OptAddTab, "+ Tab", 60f);
+
+        OptLabel(cmds, root, "Rules:  type · text contains · hue · new hue · hide", OptW, OptCapH, 150);
+        for (var i = 0; i < _rules.Count; i++)
+        {
+            var r = _rules[i];
+            var row = OptRow(cmds, root);
+            OptButton(cmds, row, RuleField(i, "type"), Filters.TypeName(r.Filter.Type), 70f);
+            OptField(cmds, row, RuleField(i, "text"), 170f, r.Filter.Text);
+            OptField(cmds, row, RuleField(i, "hue"), 60f, Filters.HueText(r.Filter.Hue));
+            OptField(cmds, row, RuleField(i, "color"), 60f, Filters.HueText(r.Color));
+            OptButton(cmds, row, RuleField(i, "hide"), r.Hide ? "HIDE" : "show", 44f);
+            OptButton(cmds, row, RuleField(i, "del"), "x", 20f);
+        }
+        OptButton(cmds, OptRow(cmds, root), OptAddRule, "+ Rule", 60f);
+    }
+
+    static EntityRef OptRow(Commands cmds, EntityRef parent)
+    {
+        var n = Node.Base();
+        n.FlexDirection = FlexDirection.Row;
+        n.AlignItems = AlignItems.Center;
+        n.Width = Val.Percent(100f);
+        n.Height = Val.Px(OptRowH);
+        n.Gap = Val.Px(4f);
+        return cmds.Spawn().With(n).ChildOf(parent);
+    }
+
+    static void OptLabel(Commands cmds, EntityRef parent, string text, float w, float h, byte grey)
+    {
+        var n = Node.Base();
+        n.Width = Val.Px(w);
+        n.Height = Val.Px(h);
+        n.AlignItems = AlignItems.Center;
+        cmds.Spawn()
+            .With(n)
+            .With(new Text { Value = text })
+            .With(new TextFont { FontId = UiFont, Size = 11 })
+            .With(new TextColor { Value = Color.Rgba(grey, grey, (byte)Math.Min(255, grey + 12), 255) })
+            .ChildOf(parent);
+    }
+
+    // Editable: the host focuses it on press and its editor owns the keys from
+    // there; the value comes back through the journal-opt-edit Changed<Text> feed.
+    static void OptField(Commands cmds, EntityRef parent, string name, float w, string value)
+    {
+        var n = Node.Base();
+        n.Width = Val.Px(w);
+        n.Height = Val.Px(OptRowH - 2f);
+        n.AlignItems = AlignItems.Center;
+        n.Padding = new UiRect { Left = Val.Px(3f), Right = Val.Px(3f), Top = Val.Px(0f), Bottom = Val.Px(0f) };
+        n.Overflow = Overflow.Clip;
+        cmds.Spawn(name)
+            .With(n)
+            .With(new BackgroundColor { Value = Color.Rgba(38, 41, 51, 255) })
+            .With(new Text { Value = value })
+            .With(new TextFont { FontId = UiFont, Size = 12 })
+            .With(new TextColor { Value = Color.Rgba(235, 238, 244, 255) })
+            .With<TextInput>()
+            .With<EditableText>()
+            .With<UiNoWindowDrag>()
+            .With(Interaction.None)
+            .With(new UiName { Value = name })
+            .ChildOf(parent);
+    }
+
+    static void OptButton(Commands cmds, EntityRef parent, string name, string text, float w)
+    {
+        var n = Node.Base();
+        n.Width = Val.Px(w);
+        n.Height = Val.Px(OptRowH - 2f);
+        n.JustifyContent = JustifyContent.Center;
+        n.AlignItems = AlignItems.Center;
+        cmds.Spawn(name)
+            .With(n)
+            .With(new BackgroundColor { Value = Color.Rgba(58, 62, 76, 255) })
+            .With(BorderRadius.All(3))
+            .With(new Text { Value = text })
+            .With(new TextFont { FontId = UiFont, Size = 11 })
+            .With(new TextColor { Value = Color.Rgba(226, 228, 236, 255) })
+            .With(Interaction.None)
+            .With<UiNoWindowDrag>()
+            .With(new UiName { Value = name })
+            .ChildOf(parent);
+    }
+
+    void OptClick(Func<string, bool> hit, Commands cmds, ModContext ctx)
+    {
+        if (hit(OptAddTab))
+        {
+            if (_tabs.Count < MaxCustomTabs)
+            {
+                _tabs.Add(new CustomTab());
+                TabsChanged(cmds, ctx);
+            }
+            return;
+        }
+        if (hit(OptAddRule))
+        {
+            if (_rules.Count < MaxRules)
+            {
+                _rules.Add(new Rule());
+                _optRebuild = true;
+                FiltersChanged(ctx);
+            }
+            return;
+        }
+
+        for (var i = 0; i < _tabs.Count; i++)
+        {
+            var f = _tabs[i].Filter;
+            if (hit(TabField(i, "type")))
+            {
+                f.Type = Filters.NextType(f.Type);
+                Relabel(cmds, ctx, TabField(i, "type"), Filters.TypeName(f.Type));
+                FiltersChanged(ctx);
+                return;
+            }
+            if (hit(TabField(i, "del")))
+            {
+                // Keep the selection on the same tab when an earlier one goes away.
+                var idx = TabLabels.Length + i;
+                if (_tab == idx) _tab = 0;
+                else if (_tab > idx) _tab--;
+                _tabs.RemoveAt(i);
+                TabsChanged(cmds, ctx);
+                return;
+            }
+        }
+
+        for (var i = 0; i < _rules.Count; i++)
+        {
+            var r = _rules[i];
+            if (hit(RuleField(i, "type")))
+            {
+                r.Filter.Type = Filters.NextType(r.Filter.Type);
+                Relabel(cmds, ctx, RuleField(i, "type"), Filters.TypeName(r.Filter.Type));
+                FiltersChanged(ctx);
+                return;
+            }
+            if (hit(RuleField(i, "hide")))
+            {
+                r.Hide = !r.Hide;
+                Relabel(cmds, ctx, RuleField(i, "hide"), r.Hide ? "HIDE" : "show");
+                FiltersChanged(ctx);
+                return;
+            }
+            if (hit(RuleField(i, "del")))
+            {
+                _rules.RemoveAt(i);
+                _optRebuild = true;
+                FiltersChanged(ctx);
+                return;
+            }
+        }
+    }
+
+    void OptEdit(ulong e, string value, Commands cmds, ModContext ctx)
+    {
+        bool Is(string name) => ctx.Entity(name) == e;
+        value = Filters.Clean(value);
+
+        for (var i = 0; i < _tabs.Count; i++)
+        {
+            var t = _tabs[i];
+            if (Is(TabField(i, "name")))
+            {
+                if (t.Name == value) return;
+                t.Name = value;
+                var idx = TabLabels.Length + i;
+                Relabel(cmds, ctx, TabName(idx), TabLabel(idx));
+                Save(ctx);
+                return;
+            }
+            if (Is(TabField(i, "text"))) { t.Filter.Text = value; FiltersChanged(ctx); return; }
+            if (Is(TabField(i, "hue"))) { t.Filter.Hue = Filters.ParseHue(value); FiltersChanged(ctx); return; }
+        }
+
+        for (var i = 0; i < _rules.Count; i++)
+        {
+            var r = _rules[i];
+            if (Is(RuleField(i, "text"))) { r.Filter.Text = value; FiltersChanged(ctx); return; }
+            if (Is(RuleField(i, "hue"))) { r.Filter.Hue = Filters.ParseHue(value); FiltersChanged(ctx); return; }
+            if (Is(RuleField(i, "color"))) { r.Color = Filters.ParseHue(value); FiltersChanged(ctx); return; }
+        }
+    }
+
+    static void Relabel(Commands cmds, ModContext ctx, string name, string text)
+    {
+        if (ctx.Entity(name) is { } ent)
+            cmds.Insert(ent, new Text { Value = text });
+    }
+
+    // Filters are applied at paint, so an edit recolours/refilters the history too.
+    void FiltersChanged(ModContext ctx)
+    {
+        _dirty = true;
+        Save(ctx);
+    }
+
+    // The strip holds one node per tab, so a tab added or removed rebuilds the
+    // journal (next tick, from the state just saved) along with the options rows.
+    void TabsChanged(Commands cmds, ModContext ctx)
+    {
+        _optRebuild = true;
+        FiltersChanged(ctx);
+        Teardown(cmds, ctx);
     }
 
     // ---- lock / persistence ---------------------------------------------
@@ -689,26 +1082,28 @@ public sealed class JournalMod : Mod
         });
     }
 
-    // Geometry + lock + tab as one CSV blob: the SDK's typed storage needs a
-    // source-generated JSON context, and six numbers don't earn one.
+    // Geometry + lock + tab as one CSV line, then the tabs + rules: the SDK's typed
+    // storage needs a source-generated JSON context, and this doesn't earn one.
     void LoadState(ModContext ctx)
     {
         var raw = ctx.Storage.GetRaw();
         if (string.IsNullOrEmpty(raw)) return;
-        var parts = raw.Split(';');
+        // Window CSV on the first line, tabs + rules after it (Filters.Parse).
+        Filters.Parse(raw, _tabs, _rules, MaxCustomTabs, MaxRules);
+        var parts = raw.Split('\n')[0].Split(';');
         if (parts.Length < 6) return;
         if (float.TryParse(parts[0], out var x)) _x = x;
         if (float.TryParse(parts[1], out var y)) _y = y;
         if (float.TryParse(parts[2], out var w)) _w = Math.Clamp(w, MinW, MaxW);
         if (float.TryParse(parts[3], out var h)) _h = Math.Clamp(h, MinH, MaxH);
         _locked = parts[4] == "1";
-        if (int.TryParse(parts[5], out var tab)) _tab = Math.Clamp(tab, 0, TabLabels.Length - 1);
+        if (int.TryParse(parts[5], out var tab)) _tab = Math.Clamp(tab, 0, TabCount - 1);
         _savedState = raw;
     }
 
     void Save(ModContext ctx)
     {
-        var blob = $"{_x};{_y};{_w};{_h};{(_locked ? 1 : 0)};{_tab}";
+        var blob = $"{_x};{_y};{_w};{_h};{(_locked ? 1 : 0)};{_tab}" + Filters.Serialize(_tabs, _rules);
         if (blob == _savedState) return;
         _savedState = blob;
         ctx.Storage.SetRaw(blob);
