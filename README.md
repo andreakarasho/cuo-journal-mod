@@ -4,7 +4,12 @@ The ClassicUO 2.0 system-log window, as a mod: a tabbed, resizable, lockable
 message log for the bottom-left of the screen.
 
 * **Tabs** — All / Sys / Chat / Party / Guild, split on the message type the
-  server sent. All is everything.
+  server sent. All is everything. Takes the system channel and overhead speech,
+  like the client's own journal.
+* **Custom tabs and rules** — the `OPT` button opens an options window: add tabs
+  (a name + a filter) and rules (a filter + a new hue and/or hide). A filter is
+  message type, text-contains (case-insensitive) and hue, all optional.
+* **Scrollback** — mouse wheel scrolls back through the history.
 * **Idle it is invisible** — the panel fades out and only the text is left, and
   the window is never a hit target, so clicks pass through to the world.
 * **Hover** — panel + chrome fade in (~170ms) and the full retained history
@@ -17,7 +22,8 @@ message log for the bottom-left of the screen.
   ASCII or unicode, like the built-in log.
 * **Repeats collapse** — a line identical to the one before it becomes
   `text [2]`, `text [3]`… instead of scrolling the window away.
-* Position, size, lock state and the active tab persist in the mod's storage.
+* Position, size, lock state, the active tab, custom tabs and rules persist in
+  the mod's storage.
 
 ## Build
 
@@ -28,6 +34,7 @@ git clone --recurse-submodules https://github.com/andreakarasho/cuo-journal-mod
 cd cuo-journal-mod
 make build                # LTO publish -> dist/journal/{mod.wasm,mod.json}
 make build LTO=false      # faster single-link build while iterating
+make test                 # filter/format unit tests (tests/, SDK-free)
 ```
 
 Install by copying `dist/journal` into the client's `ecs-mods/` folder (next to
@@ -47,18 +54,19 @@ open a PR there with `mods/journal.json` to list the mod.
 
 ## It replaces the built-in log
 
-The client draws its own bottom-left log. `mod.json` declares
+The client draws its own bottom-left log. The journal's root window carries
 
-```json
-"replaces": ["cuo:ui/system-log"]
+```csharp
+new ModSupersedes { Feature = "cuo:ui/system-log" }
 ```
 
-so the client takes that window down for as long as this mod is installed and
-enabled — no options trip, and the two never stack. Disable or uninstall the
-mod and the built-in log comes straight back.
+so the client hides its own log for as long as that window exists — no options
+trip, and the two never stack. It's a live claim, nothing in `mod.json`: disable
+or uninstall the mod, the host despawns its entities and the built-in log comes
+straight back.
 
 **Options → Interface → System Log → "Built-in message log"** still exists; it
-turns the built-in log off when no mod is replacing it.
+turns the built-in log off when no mod is superseding it.
 
 ## How it works
 
@@ -66,7 +74,8 @@ No bespoke host hooks — everything is existing mod surface:
 
 | need | surface |
 |---|---|
-| log lines | `cuo:chat/message` trigger, `Kind == 1` (`Kind 0` is overhead speech) |
+| log lines | `cuo:chat/message` trigger, `Kind 1` (system channel) and `Kind 0` (overhead speech) |
+| replace built-in log | `cuo:ui/supersedes` on the root window |
 | window + tabs | `cuo:ui/node`, `bg-color`, `text`, `text-font`, `text-color`, `text-wrap`, `interaction`, `clicked` |
 | drag | `cuo:ui/movable` (+ `cuo:ui/no-right-click-close`, so a stray right-click can't close it) |
 | resize | `cuo:ui/resizable` — the host owns the gesture; a mod must never do rect math off the raw mouse |
