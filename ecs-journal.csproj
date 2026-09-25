@@ -12,7 +12,7 @@
         <!-- The SDK compiles as its own assembly (ProjectReference in ModSdk.targets);
              globbing its sources in-tree duplicates every type and ILC rejects the
              result. Same exclusion the assistant mod carries. -->
-        <DefaultItemExcludes>$(DefaultItemExcludes);$(CuoModSdkDir)**</DefaultItemExcludes>
+        <DefaultItemExcludes>$(DefaultItemExcludes);$(CuoModSdkDir)**;tests/**</DefaultItemExcludes>
     </PropertyGroup>
 
     <Import Project="$(CuoModSdkDir)ModSdk.targets" />

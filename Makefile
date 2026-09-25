@@ -5,7 +5,7 @@ LTO ?= true
 
 OUT := dist/journal
 
-.PHONY: build check clean
+.PHONY: build check test clean
 
 # Builds the mod and assembles a drop-in folder in dist/. Copy dist/journal into
 # a client's ecs-mods/ (next to the exe) to install it.
@@ -23,4 +23,7 @@ check:
 	dotnet build ecs-journal.csproj -c $(CFG)
 
 clean:
-	rm -rf bin obj dist
+	rm -rf bin obj dist tests/bin tests/obj
+
+test:
+	dotnet test tests/journal-tests.csproj
