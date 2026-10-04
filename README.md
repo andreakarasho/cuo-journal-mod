@@ -27,22 +27,24 @@ message log for the bottom-left of the screen.
 
 ## Build
 
-Needs the .NET 10 SDK and the submodule:
+Rust (`cargo` + the `wasm32-wasip1` target) and the submodule:
 
 ```bash
 git clone --recurse-submodules https://github.com/andreakarasho/cuo-journal-mod
 cd cuo-journal-mod
-make build                # LTO publish -> dist/journal/{mod.wasm,mod.json}
-make build LTO=false      # faster single-link build while iterating
-make test                 # filter/format unit tests (tests/, SDK-free)
+rustup target add wasm32-wasip1
+make build                # LTO release -> dist/journal/{mod.wasm,mod.json}
+make test                 # filter/format unit tests (src/filters.rs, host target)
 ```
 
 Install by copying `dist/journal` into the client's `ecs-mods/` folder (next to
 the executable).
 
-Release builds are stripped (no debug info, no stack-trace metadata,
-`--strip-all` on the wasm). Pass `-p:StripSymbols=false` when you need a wasm
-trap to symbolicate.
+Release builds are stripped and LTO'd (`[profile.release]` in `Cargo.toml`).
+Set `strip = false` there when you need a wasm trap to symbolicate.
+
+Storage format is unchanged from the old C# build, so an existing
+`Data/Mods/journal/storage.json` carries over.
 
 ## Publishing
 
@@ -56,8 +58,8 @@ open a PR there with `mods/journal.json` to list the mod.
 
 The client draws its own bottom-left log. The journal's root window carries
 
-```csharp
-new ModSupersedes { Feature = "cuo:ui/system-log" }
+```rust
+types::ModSupersedes { feature: "cuo:ui/system-log".into() }
 ```
 
 so the client hides its own log for as long as that window exists — no options

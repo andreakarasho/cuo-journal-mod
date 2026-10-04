@@ -1,5 +1,2 @@
-/bin/
-/obj/
+/target/
 /dist/
-/tests/bin/
-/tests/obj/

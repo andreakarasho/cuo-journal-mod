@@ -1,0 +1,25 @@
+# Standalone crate (own empty [workspace]): the SDK is a path dependency on the
+# external/classicuo-mods-sdk submodule.
+[workspace]
+exclude = ["external"]
+
+[package]
+name = "cuo-journal"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+cuo-mod-sdk = { path = "external/classicuo-mods-sdk/rust" }
+serde = "1"
+
+[lib]
+crate-type = ["cdylib"]
+
+# Release ships stripped + LTO: the published wasm is the only artifact that ships.
+# Build with --profile dev (or strip = false) when a wasm trap needs symbolicating.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
