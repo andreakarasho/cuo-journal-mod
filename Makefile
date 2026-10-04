@@ -12,7 +12,7 @@ build:
 	# No "replaces" key: the claim on the client's system log is a LIVE component
 	# on the window root (cuo:ui/supersedes), so it comes and goes with the window
 	# instead of being a manifest fact the host has to track and undo.
-	printf '{\n  "name": "journal",\n  "version": "0.3.0",\n  "wasm": "mod.wasm",\n  "ruleset": {}\n}\n' > $(OUT)/mod.json
+	printf '{\n  "name": "journal",\n  "version": "0.4.0",\n  "wasm": "mod.wasm",\n  "ruleset": {}\n}\n' > $(OUT)/mod.json
 	@echo ">> $(OUT)/mod.wasm"
 
 check:
