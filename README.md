@@ -27,18 +27,20 @@ message log for the bottom-left of the screen.
 
 ## Build
 
-Rust (`cargo` + the `wasm32-wasip1` target) and the submodule:
+Rust (`cargo` + the `wasm32-wasip1` target). The mod builds against the SDK
+submodule (`external/classicuo-mods-sdk`); keep it on the same SDK commit as the
+client you install into.
 
 ```bash
-git clone --recurse-submodules https://github.com/andreakarasho/cuo-journal-mod
+git clone --recursive https://github.com/andreakarasho/cuo-journal-mod
 cd cuo-journal-mod
 rustup target add wasm32-wasip1
-make build                # LTO release -> dist/journal/{mod.wasm,mod.json}
+make build                # LTO release -> ../cuo-agents/ecs-mods/journal/{mod.wasm,mod.json}
 make test                 # filter/format unit tests (src/filters.rs, host target)
 ```
 
-Install by copying `dist/journal` into the client's `ecs-mods/` folder (next to
-the executable).
+`make build CUO_REPO=/path/to/client` installs into another checkout (its
+`ecs-mods/journal`); `make build OUT=dir` writes anywhere.
 
 Release builds are stripped and LTO'd (`[profile.release]` in `Cargo.toml`).
 Set `strip = false` there when you need a wasm trap to symbolicate.
@@ -78,7 +80,7 @@ No bespoke host hooks — everything is existing mod surface:
 |---|---|
 | log lines | `cuo:chat/message` trigger, `Kind 1` (system channel) and `Kind 0` (overhead speech) |
 | replace built-in log | `cuo:ui/supersedes` on the root window |
-| window + tabs | `cuo:ui/node`, `bg-color`, `text`, `text-font`, `text-color`, `text-wrap`, `interaction`, `clicked` |
+| window + tabs | `cuo:ui/node`, `bg-color`, `text`, `text-font`, `text-color`, `text-wrap`, `interaction`, parented with `cuo:ecs/child-of`; clicks are the `cuo:ui/click` event |
 | drag | `cuo:ui/movable` (+ `cuo:ui/no-right-click-close`, so a stray right-click can't close it) |
 | resize | `cuo:ui/resizable` — the host owns the gesture; a mod must never do rect math off the raw mouse |
 | hover / fade | `cuo:input/mouse` + `cuo:engine/time` |

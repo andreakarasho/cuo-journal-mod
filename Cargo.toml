@@ -1,19 +1,19 @@
-# Standalone crate (own empty [workspace]): the SDK is a path dependency on the
-# external/classicuo-mods-sdk submodule.
+# Standalone crate (own empty [workspace]), built as a wasm32-wasip1 cdylib; rlib so
+# `cargo test` runs natively.
 [workspace]
 exclude = ["external"]
 
 [package]
 name = "cuo-journal"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
 [dependencies]
+# The mod SDK submodule; bump it together with the client the mod targets.
 cuo-mod-sdk = { path = "external/classicuo-mods-sdk/rust" }
-serde = "1"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 # Release ships stripped + LTO: the published wasm is the only artifact that ships.
 # Build with --profile dev (or strip = false) when a wasm trap needs symbolicating.

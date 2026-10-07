@@ -27,7 +27,7 @@ jobs:
         run: make test
 
       - name: Build (LTO, stripped)
-        run: make build
+        run: make build OUT=dist/journal
 
       - name: Package
         id: package
