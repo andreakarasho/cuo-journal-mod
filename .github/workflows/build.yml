@@ -68,7 +68,7 @@ jobs:
             {
               "name": "journal",
               "version": "${{ steps.package.outputs.version }}",
-              "abi": "2",
+              "abi": "3",
               "description": "Tabbed, resizable system-log window",
               "authors": ["andreakarasho"],
               "repository": "https://github.com/andreakarasho/cuo-journal-mod",
