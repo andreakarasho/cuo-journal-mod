@@ -27,14 +27,14 @@ message log for the bottom-left of the screen.
 
 ## Build
 
-Rust (`cargo` + the `wasm32-wasip1` target). The mod builds against the SDK
+Rust (`cargo` + the `wasm32-wasip2` target). The mod builds against the SDK
 submodule (`external/classicuo-mods-sdk`); keep it on the same SDK commit as the
 client you install into.
 
 ```bash
 git clone --recursive https://github.com/andreakarasho/cuo-journal-mod
 cd cuo-journal-mod
-rustup target add wasm32-wasip1
+rustup target add wasm32-wasip2
 make build                # LTO release -> ../cuo-agents/ecs-mods/journal/{mod.wasm,mod.json}
 make test                 # filter/format unit tests (src/filters.rs, host target)
 ```

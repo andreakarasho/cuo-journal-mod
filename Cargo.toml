@@ -1,4 +1,4 @@
-# Standalone crate (own empty [workspace]), built as a wasm32-wasip1 cdylib; rlib so
+# Standalone crate (own empty [workspace]), built as a wasm32-wasip2 cdylib; rlib so
 # `cargo test` runs natively.
 [workspace]
 exclude = ["external"]

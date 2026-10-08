@@ -2,7 +2,7 @@
 CUO_REPO ?= ../cuo-agents
 NAME := journal
 OUT ?= $(CUO_REPO)/ecs-mods/$(NAME)
-WASM := target/wasm32-wasip1/release/cuo_journal.wasm
+WASM := target/wasm32-wasip2/release/cuo_journal.wasm
 
 .PHONY: build wasm check test clean
 
@@ -17,10 +17,10 @@ build: wasm
 	@echo ">> $(OUT)/mod.wasm"
 
 wasm:
-	cargo build --release --target wasm32-wasip1
+	cargo build --release --target wasm32-wasip2
 
 check:
-	cargo check --target wasm32-wasip1
+	cargo check --target wasm32-wasip2
 
 clean:
 	cargo clean
