@@ -269,6 +269,7 @@ export_mod!(setup);
 // Host chat -> our list: the system channel (kind 1) AND overhead speech (kind 0),
 // like the client's journal. The host routes each line to exactly one of the two,
 // so nothing lands twice.
+#[system]
 fn on_chat(e: On<Event, ChatMessage>) {
     if e.text.is_empty() || !filters::journalled(e.kind, e.message_type) {
         return;
@@ -281,11 +282,13 @@ fn on_chat(e: On<Event, ChatMessage>) {
 // The window box. Of our entities only the root carries the supersedes claim.
 type Roots = Query<&'static Node, With<ModSupersedes>>;
 
+#[system]
 fn tick(
     state: Option<Res<GameStateDto>>,
     time: Option<Res<Time>>,
     mouse: Option<Res<MouseInputDto>>,
-    roots: Roots,
+    // Spelled out, not `Roots`: #[system] reads the parameter kind from the type name.
+    roots: Query<&'static Node, With<ModSupersedes>>,
     mut cmds: Commands,
 ) {
     // No answer from the host reads as Loading — better no window than one
@@ -298,12 +301,14 @@ fn tick(
 
 // Clicks arrive as the host's cuo:ui/click event on the clicked entity; the entity
 // alone answers which control it was.
+#[system]
 fn on_click(click: On<Event, UiClick>, mut cmds: Commands) {
     with(|j| j.clicks(click.entity(), &mut cmds));
 }
 
 // Typing in an options field: the host's editor writes the field's Text, so a
 // changed-Text query over editable nodes is the whole edit feed.
+#[system]
 fn opt_edit(fields: Query<&Text, (With<EditableText>, Changed<Text>)>, mut cmds: Commands) {
     with(|j| {
         if j.opt.is_none() {

@@ -23,11 +23,21 @@ dependencies = [
 
 [[package]]
 name = "cuo-mod-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
+ "cuo-mod-sdk-macros",
  "serde",
  "serde_json",
  "wit-bindgen",
+]
+
+[[package]]
+name = "cuo-mod-sdk-macros"
+version = "0.4.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
