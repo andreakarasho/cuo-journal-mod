@@ -53,16 +53,16 @@ const MAX_H: f32 = 700.0;
 // guest can't read the host's palette; keep in step with UiTheme by hand.
 mod theme {
     pub type Rgb = (u8, u8, u8);
-    pub const BG: Rgb = (18, 18, 18);
-    pub const PANEL: Rgb = (30, 30, 36);
-    pub const FRAME: Rgb = (70, 70, 80);
-    pub const CONTROL: Rgb = (46, 46, 54);
-    pub const FIELD: Rgb = (54, 54, 62);
-    pub const ACCENT: Rgb = (232, 200, 120);
-    pub const WARN: Rgb = (240, 96, 96);
-    pub const TEXT: Rgb = (240, 240, 244);
-    pub const TEXT_MUTED: Rgb = (170, 172, 180);
-    pub const TEXT_ON_ACCENT: Rgb = (20, 20, 24);
+    pub const BG: Rgb = (9, 12, 17);
+    pub const PANEL: Rgb = (16, 21, 29);
+    pub const FRAME: Rgb = (39, 45, 54);
+    pub const CONTROL: Rgb = (28, 36, 47);
+    pub const FIELD: Rgb = (34, 43, 56);
+    pub const ACCENT: Rgb = (47, 191, 174);
+    pub const WARN: Rgb = (240, 123, 123);
+    pub const TEXT: Rgb = (232, 237, 242);
+    pub const TEXT_MUTED: Rgb = (152, 162, 173);
+    pub const TEXT_ON_ACCENT: Rgb = (4, 35, 31);
     // FontCache face | UoFontRuntime.TtfFlag (0x100); sizes take UiTheme.SizeBoost.
     pub const REGULAR: u16 = 1 | 0x100;
     pub const BOLD: u16 = 2 | 0x100;
