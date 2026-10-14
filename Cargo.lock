@@ -19,6 +19,8 @@ name = "cuo-journal"
 version = "0.6.0"
 dependencies = [
  "cuo-mod-sdk",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

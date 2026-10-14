@@ -1061,36 +1061,36 @@ impl Journal {
         ));
     }
 
-    // Geometry + lock + tab as one CSV line, then the tabs + rules (filters::parse).
-    // Same blob the C# build wrote, so an existing storage.json carries over.
+    // The whole window state as one JSON object (filters::Saved). A file that
+    // doesn't parse is ignored: the window keeps its defaults.
     fn load_state(&mut self) {
         let raw = host::storage_get(Scope::Global);
-        if raw.is_empty() {
-            return;
-        }
-        filters::parse(&raw, &mut self.tabs, &mut self.rules, MAX_CUSTOM_TABS, MAX_RULES);
-        let parts: Vec<&str> = raw.split('\n').next().unwrap_or("").split(';').collect();
-        if parts.len() < 6 {
-            return;
-        }
-        let num = |s: &str| s.trim().parse::<f32>().ok();
-        if let Some(x) = num(parts[0]) { self.x = x; }
-        if let Some(y) = num(parts[1]) { self.y = y; }
-        if let Some(w) = num(parts[2]) { self.w = w.clamp(MIN_W, MAX_W); }
-        if let Some(h) = num(parts[3]) { self.h = h.clamp(MIN_H, MAX_H); }
-        self.locked = parts[4] == "1";
-        if let Ok(t) = parts[5].trim().parse::<i64>() {
-            self.tab = t.clamp(0, self.tab_count() as i64 - 1) as usize;
-        }
+        let Ok(mut s) = serde_json::from_str::<filters::Saved>(&raw) else { return };
+        s.tabs.truncate(MAX_CUSTOM_TABS);
+        s.rules.truncate(MAX_RULES);
+        self.x = s.x;
+        self.y = s.y;
+        self.w = s.w.clamp(MIN_W, MAX_W);
+        self.h = s.h.clamp(MIN_H, MAX_H);
+        self.locked = s.locked;
+        self.tabs = s.tabs;
+        self.rules = s.rules;
+        self.tab = s.tab.min(self.tab_count() - 1);
         self.saved_state = raw;
     }
 
     fn save(&mut self) {
-        let blob = format!(
-            "{};{};{};{};{};{}{}",
-            self.x, self.y, self.w, self.h, self.locked as u8, self.tab,
-            filters::serialize(&self.tabs, &self.rules)
-        );
+        let saved = filters::Saved {
+            x: self.x,
+            y: self.y,
+            w: self.w,
+            h: self.h,
+            locked: self.locked,
+            tab: self.tab,
+            tabs: self.tabs.clone(),
+            rules: self.rules.clone(),
+        };
+        let blob = serde_json::to_string_pretty(&saved).unwrap_or_default();
         if blob != self.saved_state {
             host::storage_set(Scope::Global, &blob);
             self.saved_state = blob;

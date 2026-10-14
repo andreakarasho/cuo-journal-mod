@@ -45,8 +45,9 @@ make test                 # filter/format unit tests (src/filters.rs, host targe
 Release builds are stripped and LTO'd (`[profile.release]` in `Cargo.toml`).
 Set `strip = false` there when you need a wasm trap to symbolicate.
 
-Storage format is unchanged from the old C# build, so an existing
-`Data/Mods/journal/storage.json` carries over.
+`Data/Mods/journal/storage.json` is one JSON object: window `x`/`y`/`w`/`h`,
+`locked`, selected `tab` (0 = All), custom `tabs` and `rules`. A file that
+doesn't parse is ignored and the window starts from its defaults.
 
 ## Publishing
 

@@ -1,11 +1,14 @@
 // Custom tabs + colour/hide rules — the plain-data half of the options menu.
 //
+use serde::{Deserialize, Serialize};
+
 // No SDK types in here on purpose: the matching and the storage format are checked
 // by the tests at the bottom with a plain host `cargo test`, no wasm and no host.
 
 // One filter = up to three conditions, all of which must hold. An unset condition
 // (ty/hue -1, text "") matches everything, so a blank filter matches every line.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Filter {
     pub ty: i32,      // host MessageType byte, -1 = any
     pub text: String, // substring, case-insensitive, "" = any
@@ -27,7 +30,8 @@ impl Filter {
 }
 
 // A tab of its own: shows the lines its filter matches.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CustomTab {
     pub name: String,
     pub filter: Filter,
@@ -41,7 +45,8 @@ impl Default for CustomTab {
 
 // Recolour (color >= 0) and/or hide the lines the filter matches. First matching
 // colour wins; any matching hide drops the line from every tab.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Rule {
     pub filter: Filter,
     pub color: i32,
@@ -131,50 +136,27 @@ pub fn tab_of(kind: u8, ty: u8) -> usize {
 }
 
 // ---- storage ---------------------------------------------------------
-// Appended to the window's CSV blob, one entry per line, tab-separated:
-//   T <name> <type> <text> <hue>
-//   R <type> <text> <hue> <color> <hide>
-// The old blob had no newline, so it still loads (no entries). Fields can't hold
-// a tab or a newline — clean strips them when the user types one.
+// The whole window state as one JSON object (Data/Mods/journal/storage.json).
+// Missing tabs/rules or filter fields fall back to their defaults; anything else
+// malformed and the file is ignored (the window keeps its defaults).
 
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Saved {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub locked: bool,
+    pub tab: usize,
+    #[serde(default)]
+    pub tabs: Vec<CustomTab>,
+    #[serde(default)]
+    pub rules: Vec<Rule>,
+}
+
+// Option fields are single-line: a typed tab/newline becomes a space.
 pub fn clean(s: &str) -> String {
     s.replace(['\t', '\n', '\r'], " ")
-}
-
-pub fn serialize(tabs: &[CustomTab], rules: &[Rule]) -> String {
-    let mut out = String::new();
-    for t in tabs {
-        let f = &t.filter;
-        out += &format!("\nT\t{}\t{}\t{}\t{}", clean(&t.name), f.ty, clean(&f.text), f.hue);
-    }
-    for r in rules {
-        let f = &r.filter;
-        out += &format!("\nR\t{}\t{}\t{}\t{}\t{}", f.ty, clean(&f.text), f.hue, r.color, r.hide as u8);
-    }
-    out
-}
-
-// Parses every line after the first (the first is the window CSV). Malformed
-// lines are skipped, not fatal: a hand-edited file should lose one entry, not all.
-pub fn parse(raw: &str, tabs: &mut Vec<CustomTab>, rules: &mut Vec<Rule>, max_tabs: usize, max_rules: usize) {
-    tabs.clear();
-    rules.clear();
-    for line in raw.split('\n').skip(1) {
-        let p: Vec<&str> = line.split('\t').collect();
-        if p[0] == "T" && p.len() >= 5 && tabs.len() < max_tabs {
-            tabs.push(CustomTab { name: p[1].to_string(), filter: read_filter(&p, 2) });
-        } else if p[0] == "R" && p.len() >= 6 && rules.len() < max_rules {
-            rules.push(Rule { filter: read_filter(&p, 1), color: int(p[4]), hide: p[5] == "1" });
-        }
-    }
-}
-
-fn read_filter(p: &[&str], at: usize) -> Filter {
-    Filter { ty: int(p[at]), text: p[at + 1].to_string(), hue: int(p[at + 2]) }
-}
-
-fn int(s: &str) -> i32 {
-    s.trim().parse().unwrap_or(-1)
 }
 
 #[cfg(test)]
@@ -233,55 +215,25 @@ mod tests {
     }
 
     #[test]
-    fn storage_round_trips_after_the_window_line() {
-        let tabs = vec![
-            CustomTab { name: "Loot".into(), filter: f(1, "gold", 0x35) },
-            CustomTab { name: "tab\there".into(), filter: Filter::default() }, // a tab char gets cleaned
-        ];
-        let rules = vec![
-            Rule { filter: f(-1, "spam", -1), hide: true, ..Default::default() },
-            Rule { filter: f(0xFF, "", -1), color: 0x44, ..Default::default() },
-        ];
-        let raw = format!("6;320;320;150;1;2{}", serialize(&tabs, &rules));
-        assert!(raw.starts_with("6;320;320;150;1;2\n"));
-
-        let (mut t2, mut r2) = (Vec::new(), Vec::new());
-        parse(&raw, &mut t2, &mut r2, 8, 10);
-
-        assert_eq!(t2.len(), 2);
-        assert_eq!(t2[0].name, "Loot");
-        assert_eq!(t2[0].filter, f(1, "gold", 0x35));
-        assert_eq!(t2[1].name, "tab here");
-        assert_eq!(t2[1].filter, Filter::default());
-
-        assert_eq!(r2.len(), 2);
-        assert!(r2[0].hide);
-        assert_eq!(r2[0].color, -1);
-        assert_eq!(r2[0].filter.text, "spam");
-        assert!(!r2[1].hide);
-        assert_eq!(r2[1].color, 0x44);
-        assert_eq!(r2[1].filter.ty, 0xFF);
+    fn storage_round_trips_as_json() {
+        let saved = Saved {
+            x: 6.0, y: 320.0, w: 320.0, h: 150.5, locked: true, tab: 2,
+            tabs: vec![CustomTab { name: "Loot \"q\"".into(), filter: f(1, "gold", 0x35) }],
+            rules: vec![Rule { filter: f(-1, "spam", -1), hide: true, ..Default::default() }],
+        };
+        let raw = serde_json::to_string_pretty(&saved).unwrap();
+        assert_eq!(serde_json::from_str::<Saved>(&raw).unwrap(), saved);
     }
 
     #[test]
-    fn old_blob_and_junk_lines_parse_without_panicking() {
-        let (mut tabs, mut rules) = (vec![CustomTab::default()], vec![Rule::default()]);
-        parse("6;320;320;150;1;2", &mut tabs, &mut rules, 8, 10); // pre-filters blob
-        assert!(tabs.is_empty());
-        assert!(rules.is_empty());
-
-        parse("x\nT\tonly-name\n\nR\t1\nZ\ta\tb\nT\tok\t-1\t\t-1", &mut tabs, &mut rules, 8, 10);
-        assert_eq!(tabs.len(), 1);
-        assert_eq!(tabs[0].name, "ok");
-        assert!(rules.is_empty());
-    }
-
-    #[test]
-    fn parse_honours_the_caps() {
-        let many: Vec<CustomTab> = (0..20).map(|i| CustomTab { name: format!("t{i}"), ..Default::default() }).collect();
-        let mut tabs = Vec::new();
-        parse(&format!("x{}", serialize(&many, &[])), &mut tabs, &mut Vec::new(), 8, 10);
-        assert_eq!(tabs.len(), 8);
+    fn storage_defaults_missing_fields_and_rejects_junk() {
+        let s: Saved = serde_json::from_str(
+            r#"{"x":1,"y":2,"w":300,"h":100,"locked":false,"tab":0,"rules":[{"hide":true}]}"#,
+        ).unwrap();
+        assert!(s.tabs.is_empty());
+        assert_eq!(s.rules, vec![Rule { hide: true, ..Default::default() }]);
+        assert!(serde_json::from_str::<Saved>("7;869;452;175.6;1;0").is_err());
+        assert!(serde_json::from_str::<Saved>(r#"{"x":1}"#).is_err());
     }
 
     #[test]
