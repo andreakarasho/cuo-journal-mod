@@ -35,12 +35,11 @@ client you install into.
 git clone --recursive https://github.com/andreakarasho/cuo-journal-mod
 cd cuo-journal-mod
 rustup target add wasm32-wasip2
-make build                # LTO release -> ../cuo-agents/ecs-mods/journal/{mod.wasm,mod.json}
+make build                # LTO release -> dist/journal/{mod.wasm,mod.json}
 make test                 # filter/format unit tests (src/filters.rs, host target)
 ```
 
-`make build CUO_REPO=/path/to/client` installs into another checkout (its
-`ecs-mods/journal`); `make build OUT=dir` writes anywhere.
+Copy `dist/journal` into the client's `Data/Mods/`; `make build OUT=dir` writes anywhere.
 
 Release builds are stripped and LTO'd (`[profile.release]` in `Cargo.toml`).
 Set `strip = false` there when you need a wasm trap to symbolicate.

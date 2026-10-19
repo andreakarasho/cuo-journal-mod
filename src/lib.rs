@@ -284,9 +284,9 @@ type Roots = Query<&'static Node, With<ModSupersedes>>;
 
 #[system]
 fn tick(
-    state: Option<Res<GameStateDto>>,
+    state: Option<Res<GameState>>,
     time: Option<Res<Time>>,
-    mouse: Option<Res<MouseInputDto>>,
+    mouse: Option<Res<MouseInput>>,
     // Spelled out, not `Roots`: #[system] reads the parameter kind from the type name.
     roots: Query<&'static Node, With<ModSupersedes>>,
     mut cmds: Commands,
@@ -434,7 +434,7 @@ impl Journal {
         &mut self,
         in_game: bool,
         time: Option<(f32, f32)>,
-        mouse: Option<&MouseInputDto>,
+        mouse: Option<&MouseInput>,
         roots: &Roots,
         cmds: &mut Commands,
     ) {
