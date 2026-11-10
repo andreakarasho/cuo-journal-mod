@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- The journal window (cuo-journal-mod). The mod sizes the window (the body fills it) and answers
+     the data-arg of each data-action="mod" button below. It fills #tabs with one .tab button per tab
+     (.on is the shown one) and #lines with the lines on show, oldest first, each with its font and
+     hue inline. It sets #lock's caption and adds .on to #opt while the options are open. On the body
+     it puts .idle while the cursor is away (only the lines are left then) and .locked while the
+     window can't be moved or resized. The mouse wheel pages through the history: that is the mod's,
+     #lines is no scroll box. -->
+<html>
+<head><link rel="stylesheet" href="journal.css"></head>
+<body id="journal" data-theme class="idle locked">
+  <div id="strip">
+    <div id="tabs"></div>
+    <button id="opt" data-action="mod" data-arg="opt">OPT</button>
+    <button id="lock" data-action="mod" data-arg="lock">LOCK</button>
+  </div>
+  <div id="lines"></div>
+  <div id="grip"></div>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- The journal's options window (cuo-journal-mod). The mod fills #tab-rows with one .row per custom
+     tab (inputs #t0-name, #t0-text, #t0-hue, ...) and #rule-rows with one per rule (#r0-text, #r0-hue,
+     #r0-color, ...), reads those inputs by id while the window is open, and answers the data-arg of
+     each data-action="mod" button, the rows' .type, .hide and .del included. -->
+<html>
+<head><link rel="stylesheet" href="options.css"></head>
+<body data-theme>
+  <div id="head">
+    <div id="title">Journal options</div>
+    <button id="close" data-action="close">X</button>
+  </div>
+  <div class="caption">Tabs:  name · type · text contains · hue</div>
+  <div id="tab-rows"></div>
+  <button class="add" data-action="mod" data-arg="add-tab">+ Tab</button>
+  <div class="caption">Rules:  type · text contains · hue · new hue · hide</div>
+  <div id="rule-rows"></div>
+  <button class="add" data-action="mod" data-arg="add-rule">+ Rule</button>
+</body>
+</html>

@@ -9,11 +9,15 @@ message log for the bottom-left of the screen.
 * **Custom tabs and rules** — the `OPT` button opens an options window: add tabs
   (a name + a filter) and rules (a filter + a new hue and/or hide). A filter is
   message type, text-contains (case-insensitive) and hue, all optional.
+* **Themed** — the windows are HTML/CSS pages (`<body data-theme>`), so the
+  client's UI theme draws them. Their files are exported once to
+  `Data/Mods/journal/ui/` (`journal.html` / `.css`, `options.html` / `.css`),
+  where your edited copy wins and reloads on save.
 * **Scrollback** — mouse wheel scrolls back through the history.
-* **Idle it is invisible** — the panel fades out and only the text is left, and
-  the window is never a hit target, so clicks pass through to the world.
-* **Hover** — panel + chrome fade in (~170ms) and the full retained history
-  shows, instead of only the lines still inside their 10s.
+* **Idle it is invisible** — the panel goes and only the text is left, and
+  locked the window is no hit target, so clicks pass through to the world.
+* **Hover** — the panel fades in (~170ms) with the chrome, and the full retained
+  history shows, instead of only the lines still inside their 10s.
 * **Lock** — the `LOCK` / `MOVE` button. Locked (the default) the window can't
   be dragged or resized; only the tabs stay clickable.
 * **Resize** — drag the grip in the bottom-right corner while unlocked (it
@@ -80,10 +84,10 @@ No bespoke host hooks — everything is existing mod surface:
 |---|---|
 | log lines | `cuo:chat/message` trigger, `Kind 1` (system channel) and `Kind 0` (overhead speech) |
 | replace built-in log | `cuo:ui/supersedes` on the root window |
-| window + tabs | `cuo:ui/node`, `bg-color`, `text`, `text-font`, `text-color`, `text-wrap`, `interaction`, parented with `cuo:ecs/child-of`; clicks are the `cuo:ui/click` event |
+| window + tabs + options | the `host.page-*` calls: `src/journal.html` / `.css` and `src/options.html` / `.css`, filled by element id; clicks are `page-clicks`, option fields `page-value` |
 | drag | `cuo:ui/movable` (+ `cuo:ui/no-right-click-close`, so a stray right-click can't close it) |
 | resize | `cuo:ui/resizable` — the host owns the gesture; a mod must never do rect math off the raw mouse |
 | hover / fade | `cuo:input/mouse` + `cuo:engine/time` |
-| line font | `cuo:ui/text-font` — `FontId` is the server's font index, `\| 0x80` for the UO ASCII set (the host's `AsciiFlag`); `Size` is ignored, UO bitmap fonts are fixed-size |
-| line colour | unicode lines: the `hue_color` host import — the server's UO hue resolved to RGB, the same tint the host would paint the glyph with. ASCII lines: the raw hue packed into the colour's R/G bytes, because the host bakes the hue into those glyphs instead of tinting them |
+| line font | inline `font-family`: `uo-N` is the server's unicode font N, `uo-ascii-N` the UO ASCII set; UO bitmap fonts are fixed-size |
+| line colour | inline `color: hue(N)`, the raw server hue (or a rule's): the host paints it as its own log does |
 | persistence | per-mod storage (`Data/Mods/journal/storage.json`) |

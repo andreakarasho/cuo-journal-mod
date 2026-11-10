@@ -1,0 +1,21 @@
+/* The journal's options window (cuo-journal-mod). It takes the client's theme (<body data-theme>):
+   the window, the buttons and the fields are the theme's, the sizes are here. The window grows with
+   its rows. Everything here is yours to change. */
+
+body { display: flex; flex-direction: column; gap: 4px; width: 460px; font-size: 13px }
+button { display: flex; justify-content: center; align-items: center; flex-shrink: 0; height: 20px; padding: 0; font-size: 13px }
+input { height: 20px; box-sizing: border-box; min-width: 0; padding: 0 0 0 4px; font-size: 13px }
+
+#head { display: flex; align-items: center; height: 22px }
+#title { flex-grow: 1; font-size: 15px; font-weight: bold }
+.caption { color: var(--theme-muted, rgb(152, 162, 173)) }
+
+#tab-rows, #rule-rows { display: flex; flex-direction: column; gap: 4px }
+.row { display: flex; align-items: center; gap: 4px; height: 22px }
+.name { width: 90px }
+.type { width: 70px }
+.text { flex-grow: 1; width: 100px }
+.hue, .color { width: 60px }
+.hide { width: 44px }
+.del, #close { width: 20px }
+.add { align-self: flex-start; width: 60px }

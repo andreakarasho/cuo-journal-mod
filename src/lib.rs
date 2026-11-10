@@ -10,81 +10,54 @@
 //   * lines arrive as cuo:chat/message events (observed): kind 1 (the system log
 //     channel) and kind 0 (overhead speech), taken the way the client's own
 //     journal takes them (filters::journalled / format);
-//   * the window is plain cuo:ui/* nodes parented with cuo:ecs/child-of — no
-//     custom rendering;
-//   * lines carry cuo:ui/text-hue, so the host paints them exactly the way it
-//     paints its own log: the server's hue baked in, legacy black border, and
-//     the ascii/unicode font split taken from the hue the server sent;
+//   * the window is an HTML/CSS page (journal.html / journal.css, <body data-theme>),
+//     so the client's UI theme draws it and a player restyles it; the mod fills it
+//     by element id and reads its buttons with page-clicks;
+//   * a line carries its font (`uo-N` / `uo-ascii-N`) and `color: hue(N)` inline, so
+//     the host paints it the way it paints its own log: the server's hue baked in,
+//     legacy black border, and the ascii/unicode font split the server sent;
 //   * dragging is cuo:ui/movable, resizing is cuo:ui/resizable (the host owns
 //     both gestures — a mod must never do rect math off the raw mouse), and
 //   * cuo:ui/no-right-click-close keeps a stray right-click from closing it, and
-//     cuo:ui/supersedes is how it claims the host's system-log feature;
-//   * buttons answer the cuo:ui/click event; option fields are fed by the host's
-//     editor (a Changed<Text> query over editable nodes).
+//     cuo:ui/supersedes is how it claims the host's system-log feature.
 //
-// Idle the window is invisible: the panel fades out and only the text is left,
-// and since mod nodes carry no UiCustom they are never a hit target, so clicks
-// fall through to the world exactly like the built-in log. Hovering (or holding
-// a drag) fades the panel + chrome back in and shows the full retained history
-// instead of just the lines still inside their 10s.
+// Idle the window is invisible: the body gets `.idle` (no panel, no chrome) and only
+// the text is left, and locked the root is no movable window, so clicks fall through
+// to the world exactly like the built-in log. Hovering (or holding a drag) brings the
+// panel + chrome back and shows the full retained history instead of just the lines
+// still inside their 10s.
 //
-// The OPT button on the strip opens the options window: custom tabs (a name + a
-// filter) and rules (a filter + a new hue and/or hide). A filter is message type,
-// text-contains (case-insensitive) and hue, all optional — filters.rs holds the
-// matching and the storage format, SDK-free so `cargo test` can check it.
+// The OPT button on the strip opens the options window (options.html / options.css):
+// custom tabs (a name + a filter) and rules (a filter + a new hue and/or hide). A
+// filter is message type, text-contains (case-insensitive) and hue, all optional —
+// filters.rs holds the matching and the storage format, SDK-free so `cargo test`
+// can check it.
 
 mod filters;
 
-use cuo_mod_sdk::host::Scope;
+use cuo_mod_sdk::host::{PageChange, Scope};
 use cuo_mod_sdk::prelude::*;
 use filters::{CustomTab, Filter, Rule};
 use std::cell::RefCell;
 
-// ---- layout ----------------------------------------------------------
-const TAB_H: f32 = 20.0;
-const PAD: f32 = 4.0;
+// The pages, exported once to Data/Mods/journal/ui/ where the player's copy wins.
+const PAGE: &str = "journal";
+const PAGE_HTML: &str = include_str!("journal.html");
+const PAGE_CSS: &str = include_str!("journal.css");
+const OPT_PAGE: &str = "options";
+const OPT_HTML: &str = include_str!("options.html");
+const OPT_CSS: &str = include_str!("options.css");
+
 const MIN_W: f32 = 140.0;
 const MIN_H: f32 = 60.0;
 const MAX_W: f32 = 900.0;
 const MAX_H: f32 = 700.0;
-
-// The host's flat "modern panel" theme (ClassicUO.Ecs UiTheme.cs): near-black
-// background, graphite panels, gold accent, Roboto TTF. Mirrored here because a
-// guest can't read the host's palette; keep in step with UiTheme by hand.
-mod theme {
-    pub type Rgb = (u8, u8, u8);
-    pub const BG: Rgb = (13, 17, 23);
-    pub const PANEL: Rgb = (16, 21, 29);
-    pub const FRAME: Rgb = (52, 61, 74);
-    pub const CONTROL: Rgb = (28, 36, 47);
-    pub const FIELD: Rgb = (34, 43, 56);
-    pub const ACCENT: Rgb = (47, 191, 174);
-    pub const WARN: Rgb = (240, 123, 123);
-    pub const TEXT: Rgb = (232, 237, 242);
-    pub const TEXT_MUTED: Rgb = (152, 162, 173);
-    pub const TEXT_ON_ACCENT: Rgb = (4, 35, 31);
-    // FontCache face | UoFontRuntime.TtfFlag (0x100); sizes take UiTheme.SizeBoost.
-    pub const REGULAR: u16 = 1 | 0x100;
-    pub const BOLD: u16 = 2 | 0x100;
-    pub const fn size(s: u16) -> u16 {
-        s + 2
-    }
-}
-
-fn rgb(c: theme::Rgb, a: u8) -> Color {
-    Color::rgba(c.0, c.1, c.2, a)
-}
-const LINE_H: f32 = 15.0;
 // Bottom-right resize band. The HOST owns the gesture (UiResizable.grip in
-// apply_lock) and puts its hit square flush in the corner, so the visible grip
-// uses the same size and the same origin — a grip you can see but not grab
+// apply_lock) and puts its hit square flush in the corner, so the page's #grip
+// is the same size at the same origin — a grip you can see but not grab
 // (or the reverse) is worse than none.
 const GRIP_SIZE: f32 = 10.0;
-// Bit on TextFont.FontId selecting the UO ASCII font set instead of the
-// unicode one — the host's UoFontRuntime.AsciiFlag. Server text says which
-// set it was sent for, and the built-in log honours it; so does this.
-const ASCII_FLAG: u16 = 0x80;
-const LINE_SLOTS: usize = 40; // pre-spawned text nodes (the visible window)
+const LINE_SLOTS: usize = 40; // most lines on the page at once (the visible window)
 const MAX_LINES: usize = 60; // retained history
 // How long a line shows while the window is idle. MILLISECONDS: cuo:engine/time
 // hands out total as a monotonic ms clock (and frame as seconds — they differ).
@@ -97,101 +70,24 @@ const HOVER_Z: i32 = 30000; // above them while the cursor is on it
 // cuo:game/state — 0 Loading, 1 LoginScreen, 2 ServerSelection,
 // 3 CharacterSelection, 4 CharacterCreation, 5 LoginError, 6 GameScreen.
 const GAME_SCREEN: u8 = 6;
-// Frames a freshly spawned root may stay out of the Node query before it counts
-// as lost. It lands the frame after the spawn; this is slack.
-const ROOT_GRACE: u32 = 60;
 
-// ---- entity names ----------------------------------------------------
-// cuo:ui/name tags — identity for the host's `-layout` inspector (and whoever
-// checks the window in-world). The mod itself keeps the spawned entities.
+// cuo:ui/name tags — identity for the host's `-layout` inspector.
 const ROOT: &str = "journal.root";
-const STRIP: &str = "journal.strip";
-const TABS_BOX: &str = "journal.tabs";
-const AREA: &str = "journal.area";
-const LOCK_BTN: &str = "journal.lock";
-const GRIP: &str = "journal.grip";
-const OPT_BTN: &str = "journal.optbtn";
-
-// Options window. Separate root: it outlives journal rebuilds (adding a tab
-// respawns the journal strip) and never fades.
 const OPT: &str = "journal.opt";
-const OPT_CLOSE: &str = "journal.opt.close";
-const OPT_ADD_TAB: &str = "journal.opt.addtab";
-const OPT_ADD_RULE: &str = "journal.opt.addrule";
+
 // ponytail: hard caps instead of a scrolling list, the window just grows.
 const MAX_CUSTOM_TABS: usize = 8;
 const MAX_RULES: usize = 10;
-const OPT_W: f32 = 460.0;
-const OPT_ROW_H: f32 = 22.0;
-const OPT_CAP_H: f32 = 16.0;
-const OPT_GAP: f32 = 4.0;
-const OPT_PAD: f32 = 8.0;
+// The options page's height without rows and per row, to open it just above the
+// journal. An estimate of options.css: the page sizes itself.
+const OPT_H: f32 = 150.0;
+const OPT_ROW_H: f32 = 26.0;
 const OPT_Z: i32 = HOVER_Z + 1;
-
-fn tab_field(i: usize, f: &str) -> String {
-    format!("journal.opt.t{i}.{f}")
-}
-fn rule_field(i: usize, f: &str) -> String {
-    format!("journal.opt.r{i}.{f}")
-}
-fn tab_name(i: usize) -> String {
-    format!("journal.tab{i}")
-}
-fn line_name(i: usize) -> String {
-    format!("journal.line{i}")
-}
+// The inputs of an options row, read as #t<i>-<field> and #r<i>-<field>.
+const TAB_FIELDS: [&str; 3] = ["name", "text", "hue"];
+const RULE_FIELDS: [&str; 3] = ["text", "hue", "color"];
 
 const TAB_LABELS: &[&str] = &["All", "Sys", "Chat", "Party", "Guild"];
-
-// What a control in the options window is.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Field {
-    Close,
-    AddTab,
-    AddRule,
-    TabName(usize),
-    TabType(usize),
-    TabText(usize),
-    TabHue(usize),
-    TabDel(usize),
-    RuleType(usize),
-    RuleText(usize),
-    RuleHue(usize),
-    RuleColor(usize),
-    RuleHide(usize),
-    RuleDel(usize),
-}
-
-// The journal window's entities, as spawned.
-struct Ui {
-    root: Entity,
-    strip: Entity,
-    area: Entity,
-    lock: Entity,
-    grip: Entity,
-    opt_btn: Entity,
-    tabs: Vec<Entity>,
-    lines: Vec<Entity>,
-    // The root has shown up in the Node query; from then on, missing means the
-    // host deleted it.
-    seen: bool,
-    waited: u32,
-}
-
-// The options window's entities.
-struct OptUi {
-    root: Entity,
-    fields: Vec<(Entity, Field)>,
-}
-
-impl OptUi {
-    fn field_of(&self, e: Entity) -> Option<Field> {
-        self.fields.iter().find(|f| f.0 == e).map(|f| f.1)
-    }
-    fn entity_of(&self, f: Field) -> Option<Entity> {
-        self.fields.iter().find(|x| x.1 == f).map(|x| x.0)
-    }
-}
 
 struct Line {
     base_text: String, // as received, without the repeat suffix
@@ -201,7 +97,7 @@ struct Line {
     ty: u8,       // host MessageType, for the filters
     expire: f32,
     hue: u16,     // as the server sent it; rules recolour at paint
-    font_id: u16, // UO font id, | ASCII_FLAG when the server sent ascii
+    font: String, // the CSS family of the UO font the server sent it for
 }
 
 struct Journal {
@@ -209,9 +105,9 @@ struct Journal {
     rules: Vec<Rule>,
     lines: Vec<Line>,
 
-    ui: Option<Ui>,
+    page: Option<u64>, // the journal window
     loaded: bool,
-    dirty: bool, // lines/tab changed — repaint the text column
+    dirty: bool, // lines/tab changed — refill #lines
     last_show_all: bool,
     // Soonest expire among the lines currently on an IDLE window, so the tick can
     // spot "a line just aged out" with one compare. f32::MAX = nothing to wait
@@ -232,20 +128,18 @@ struct Journal {
     saved_state: String,
     now: f32,
 
-    // Last values actually pushed to the host. Every write crosses the ABI, so an
-    // idle window (the common case) must cost zero commands: paint compares
-    // against these and returns early when nothing moved.
-    painted_alpha: u8, // != the spawn alpha (0), so the first frame paints
-    painted_z: i32,
-    painted_tab: usize,
-    painted_locked: bool,
-    painted_opt: bool,
-    painted_w: f32,
-    painted_h: f32,
+    // (hovered, tab, locked, options open) as last pushed to the host. Every write
+    // crosses the ABI, so an idle window (the common case) must cost zero calls.
+    painted: Option<(bool, usize, bool, bool)>,
+    tabs_dirty: bool, // a tab was added, removed or renamed — refill #tabs
 
     opt_open: bool,
-    opt: Option<OptUi>,
-    opt_rebuild: bool, // add/remove: despawn now, respawn next tick
+    opt: Option<u64>, // the options window
+    opt_rows: u64,    // its #tab-rows element as last seen: a reload makes a new one
+    opt_dirty: bool,  // refill its rows
+    // The inputs' values at the last read, in TAB_FIELDS / RULE_FIELDS order. Empty
+    // after a refill: the next read is the baseline, not an edit.
+    opt_seen: Vec<String>,
 }
 
 thread_local! {
@@ -259,9 +153,8 @@ fn with<R>(f: impl FnOnce(&mut Journal) -> R) -> R {
 }
 
 fn setup(app: &mut App) {
-    app.add_systems(Schedule::Update, (tick, opt_edit.after(tick)));
+    app.add_systems(Schedule::Update, tick);
     app.add_observer(on_chat);
-    app.add_observer(on_click);
 }
 
 export_mod!(setup);
@@ -279,7 +172,7 @@ fn on_chat(e: On<Event, ChatMessage>) {
     with(|j| j.append(text, e.message_type, tab, e.hue, e.font, e.is_unicode));
 }
 
-// The window box. Of our entities only the root carries the supersedes claim.
+// The window box. Of our entities only the journal's root carries the supersedes claim.
 type Roots = Query<&'static Node, With<ModSupersedes>>;
 
 #[system]
@@ -299,34 +192,13 @@ fn tick(
     with(|j| j.tick(in_game, time, mouse.as_ref(), &roots, &mut cmds));
 }
 
-// Clicks arrive as the host's cuo:ui/click event on the clicked entity; the entity
-// alone answers which control it was.
-#[system]
-fn on_click(click: On<Event, UiClick>, mut cmds: Commands) {
-    with(|j| j.clicks(click.entity(), &mut cmds));
-}
-
-// Typing in an options field: the host's editor writes the field's Text, so a
-// changed-Text query over editable nodes is the whole edit feed.
-#[system]
-fn opt_edit(fields: Query<&Text, (With<EditableText>, Changed<Text>)>, mut cmds: Commands) {
-    with(|j| {
-        if j.opt.is_none() {
-            return;
-        }
-        for (e, t) in &fields {
-            j.opt_edit(e, &t.value, &mut cmds);
-        }
-    });
-}
-
 impl Journal {
     fn new() -> Journal {
         Journal {
             tabs: Vec::new(),
             rules: Vec::new(),
             lines: Vec::new(),
-            ui: None,
+            page: None,
             loaded: false,
             dirty: true,
             last_show_all: false,
@@ -342,16 +214,13 @@ impl Journal {
             was_hovered: false,
             saved_state: String::new(),
             now: 0.0,
-            painted_alpha: 255,
-            painted_z: -1,
-            painted_tab: usize::MAX,
-            painted_locked: false,
-            painted_opt: false,
-            painted_w: 0.0,
-            painted_h: 0.0,
+            painted: None,
+            tabs_dirty: true,
             opt_open: false,
             opt: None,
-            opt_rebuild: false,
+            opt_rows: 0,
+            opt_dirty: false,
+            opt_seen: Vec::new(),
         }
     }
 
@@ -374,7 +243,7 @@ impl Journal {
     fn append(&mut self, text: String, ty: u8, tab: usize, hue: u16, font: u8, is_unicode: bool) {
         // The server picks the font set per message; the built-in log renders
         // each line with the one it was sent for, and so does this.
-        let font_id = if is_unicode { font as u16 } else { font as u16 | ASCII_FLAG };
+        let font = if is_unicode { format!("uo-{font}") } else { format!("uo-ascii-{font}") };
         let expire = self.now + LIFETIME;
         self.dirty = true;
 
@@ -386,11 +255,11 @@ impl Journal {
             last.text = format!("{text} [{}]", last.count);
             last.hue = hue;
             last.ty = ty;
-            last.font_id = font_id;
+            last.font = font;
             last.expire = expire;
             return;
         }
-        let line = Line { text: text.clone(), base_text: text, count: 1, tab, ty, expire, hue, font_id };
+        let line = Line { text: text.clone(), base_text: text, count: 1, tab, ty, expire, hue, font };
         // Scrolled back into the history: a new arrival must not shove the view
         // down a line. Only a line this tab shows counts — the others aren't in
         // the column being scrolled. paint_lines clamps, so the MAX_LINES trim
@@ -443,53 +312,35 @@ impl Journal {
         // its spawn system under RunIf(GameScreen) and despawns OnExit — and a mod
         // has no RunIf, so the check lives here.
         if !in_game {
-            if self.ui.is_some() {
-                self.teardown(cmds);
-            }
-            if let Some(opt) = self.opt.take() {
-                cmds.entity(opt.root).despawn();
-            }
-            self.opt_open = false;
+            self.teardown();
             return;
         }
 
-        let Some(ui) = self.ui.as_mut() else {
+        let Some(page) = self.page else {
             self.load_state();
             self.spawn(cmds);
             return;
         };
 
+        // A window that is gone = the host deleted it without telling us. That is
+        // what disable→enable does (the host despawns every entity the mod owns,
+        // then only re-runs Startup — and this window is built in Update), so
+        // without this the mod ticks on forever editing a dead page and the window
+        // never comes back until a client restart. Reset and let the next tick
+        // rebuild it. The options window went down with the rest.
+        if !host::page_is_open(page) {
+            self.forget();
+            return;
+        }
+
         // The host owns the window box once it exists (drag + resize write it),
-        // so read it back rather than tracking our own copy.
-        let root = ui.root;
-        match roots.get(root) {
-            Some(node) => {
-                ui.seen = true;
-                self.x = node.left.value;
-                self.y = node.top.value;
-                self.w = node.width.value;
-                self.h = node.height.value;
-            }
-            None => {
-                ui.waited += 1;
-                if !ui.seen && ui.waited <= ROOT_GRACE {
-                    return; // the spawn hasn't landed yet
-                }
-                if !ui.seen {
-                    cmds.entity(root).despawn();
-                }
-                // A root we saw is gone = the host deleted our subtree without
-                // telling us. That is what disable→enable does (the host despawns
-                // every entity the mod owns, then only re-runs Startup — and this
-                // window is built in Update), so without this the mod ticks on
-                // forever writing components at a dead id and the window never
-                // comes back until a client restart. Reset and let the next tick
-                // rebuild it. The options window went down with the rest.
-                self.forget();
-                self.opt = None;
-                self.opt_open = false;
-                return;
-            }
+        // so read it back rather than tracking our own copy. Not in the query the
+        // frame of the spawn: the saved box stands until it is.
+        if let Some(node) = roots.get(Entity::from_bits(page)) {
+            self.x = node.left.value;
+            self.y = node.top.value;
+            self.w = node.width.value;
+            self.h = node.height.value;
         }
 
         self.tick_opt(cmds);
@@ -503,7 +354,7 @@ impl Journal {
             self.loaded = true;
             self.load_state();
             self.apply_lock(cmds);
-            cmds.entity(root).insert(Node::abs(self.x, self.y, self.w, self.h));
+            cmds.entity(Entity::from_bits(page)).insert(self.root_node());
         }
 
         let inside = mouse.is_some_and(|m| {
@@ -529,6 +380,8 @@ impl Journal {
             self.dirty = true;
         }
 
+        // The page fades its own panel (a CSS transition); this is only the time
+        // the history waits before it replaces the fresh lines.
         let target = if hovered { 1.0 } else { 0.0 };
         let step = dt * FADE_SPEED;
         self.fade = if (target - self.fade).abs() <= step { target } else { self.fade + step.copysign(target - self.fade) };
@@ -539,7 +392,10 @@ impl Journal {
             self.save();
         }
 
-        self.paint(cmds);
+        for click in host::page_clicks(page) {
+            self.click(&click, cmds);
+        }
+        self.paint(page, hovered, cmds);
 
         let show_all = self.fade >= 1.0;
         // A line ageing out of its lifetime changes what the idle window shows, and
@@ -554,211 +410,98 @@ impl Journal {
         if self.dirty || show_all != self.last_show_all {
             self.last_show_all = show_all;
             self.dirty = false;
-            self.paint_lines(cmds, show_all);
+            self.paint_lines(page, show_all);
         }
     }
 
-    // Leaving the world: take the window down and come back to a clean slate, so
-    // logging back in rebuilds it from storage exactly like a fresh login.
+    // Leaving the world: take the windows down and come back to a clean slate, so
+    // logging back in rebuilds the journal from storage exactly like a fresh login.
     // The retained lines survive — the client keeps its SystemMessages store across
     // the same transition, and a log that forgets on every logout is no log.
-    fn teardown(&mut self, cmds: &mut Commands) {
-        if let Some(ui) = &self.ui {
-            cmds.entity(ui.root).despawn(); // takes the subtree with it, host-side
+    fn teardown(&mut self) {
+        for page in [self.page, self.opt].into_iter().flatten() {
+            host::page_close(page);
         }
         self.forget();
     }
 
-    // Drop everything tied to a window that no longer exists, so the next tick
-    // spawns a fresh one. Split out of teardown because the host can delete the
-    // subtree on its own (disable/enable), and then there is nothing left to
-    // despawn — only the guest-side bookkeeping to clear.
+    // Drop everything tied to windows that no longer exist, so the next tick
+    // spawns a fresh journal. Split out of teardown because the host can delete
+    // them on its own (disable/enable), and then there is nothing left to close —
+    // only the guest-side bookkeeping to clear.
     fn forget(&mut self) {
-        self.ui = None;
+        self.page = None;
+        self.opt = None;
+        self.opt_open = false;
         self.loaded = false; // restore the box + re-apply the lock on respawn
         self.dirty = true;
         self.next_expire = f32::MAX;
         self.scroll = 0;
         self.fade = 0.0;
         self.was_hovered = false;
-        // paint short-circuits on "nothing moved", so the cached values have to look
-        // impossible or the rebuilt window would keep the old chrome for a frame.
-        self.painted_alpha = 255;
-        self.painted_z = -1;
-        self.painted_tab = usize::MAX;
-        self.painted_w = 0.0;
-        self.painted_h = 0.0;
+        // paint short-circuits on "nothing moved": a new page has nothing of ours yet.
+        self.painted = None;
+        self.tabs_dirty = true;
     }
 
     // ---- ui ----------------------------------------------------------
 
-    fn spawn(&mut self, cmds: &mut Commands) {
-        let root = cmds
-            .spawn((
-                Node::abs(self.x, self.y, self.w, self.h),
-                BackgroundColor { value: rgb(theme::BG, 0) },
-                BorderRadius::all(8.0),
-                GlobalZIndex { value: IDLE_Z },
-                // Right-click must not close the log; drag/resize are added by
-                // apply_lock once the saved lock state is known.
-                UiNoRightClickClose {},
-                // THIS window is the system log while it exists: the client hides its
-                // own bottom-left scroll and brings it back the moment this entity is
-                // gone (mod disabled/unloaded -> host despawns our entities). Live
-                // claim, so nothing has to be declared in mod.json or undone on exit.
-                ModSupersedes { feature: "cuo:ui/system-log".into() },
-                UiContainsByBounds {},
-                UiName { value: ROOT.into() },
-            ))
-            .id();
-
-        // Tab strip — flow row, so the tabs size to their labels and the lock
-        // button rides the right edge at any width.
-        let strip = cmds
-            .spawn((
-                row(0.0, 0.0, self.w, TAB_H),
-                BackgroundColor { value: rgb(theme::PANEL, 0) },
-                UiName { value: STRIP.into() },
-                ChildOf::new(root),
-            ))
-            .id();
-
-        let tabs_box = cmds.spawn((grow(TAB_H), UiName { value: TABS_BOX.into() }, ChildOf::new(strip))).id();
-
-        let mut tabs = Vec::with_capacity(self.tab_count());
-        for i in 0..self.tab_count() {
-            let label = self.tab_label(i);
-            let (bg, fg) = (rgb(theme::CONTROL, 0), rgb(theme::TEXT_MUTED, 0));
-            tabs.push(strip_button(cmds, tabs_box, &tab_name(i), &label, bg, fg));
-        }
-        let opt_btn = strip_button(cmds, strip, OPT_BTN, "OPT", rgb(theme::CONTROL, 0), rgb(theme::TEXT_MUTED, 0));
-        let lock = strip_button(cmds, strip, LOCK_BTN, "LOCK", rgb(theme::CONTROL, 0), rgb(theme::ACCENT, 0));
-
-        // Text column: bottom-aligned, clipped, so lines stack upward from the
-        // bottom edge like the built-in log.
-        let area = cmds
-            .spawn((
-                column(PAD, TAB_H, self.w - PAD * 2.0, self.h - TAB_H - 2.0),
-                UiName { value: AREA.into() },
-                ChildOf::new(root),
-            ))
-            .id();
-
-        let mut lines = Vec::with_capacity(LINE_SLOTS);
-        for i in 0..LINE_SLOTS {
-            let line = cmds.spawn((
-                line_node(),
-                Text::default(),
-                // UO unicode font 1 placeholder; paint_lines sets the server's.
-                TextFont { font_id: 1, size: 13 },
-                TextColor { value: rgb(theme::TEXT, 255) },
-                TextWrap { kind: text_wrap_kind::WORDS },
-                UiName { value: line_name(i) },
-                ChildOf::new(area),
-            ));
-            lines.push(line.id());
-        }
-
-        // Resize grip. Purely a handle to look at — apply_lock's UiResizable is
-        // what actually resizes, and the host's grab band is this same corner
-        // square. Chrome, and unlocked-only: a locked window can't be resized,
-        // so it must not advertise a grip (paint drives both).
-        let grip = cmds
-            .spawn((
-                grip_node(self.w, self.h),
-                BackgroundColor { value: rgb(theme::FRAME, 0) },
-                BorderRadius::all(4.0),
-                UiName { value: GRIP.into() },
-                ChildOf::new(root),
-            ))
-            .id();
-
-        self.ui = Some(Ui { root, strip, area, lock, grip, opt_btn, tabs, lines, seen: false, waited: 0 });
+    // The window box: the page's body fills it.
+    fn root_node(&self) -> Node {
+        let mut n = Node::abs(self.x, self.y, self.w, self.h);
+        n.display = display::FLEX;
+        n
     }
 
-    // Per-frame repaint of everything the fade touches. Colours only — the
+    fn spawn(&mut self, cmds: &mut Commands) {
+        let Some(page) = host::page_spawn(PAGE, PAGE_HTML, PAGE_CSS, self.x as i32, self.y as i32) else { return };
+        cmds.entity(Entity::from_bits(page)).insert((
+            self.root_node(),
+            GlobalZIndex { value: IDLE_Z },
+            // Right-click must not close the log.
+            UiNoRightClickClose {},
+            // THIS window is the system log while it exists: the client hides its
+            // own bottom-left scroll and brings it back the moment this entity is
+            // gone (mod disabled/unloaded -> host despawns our entities). Live
+            // claim, so nothing has to be declared in mod.json or undone on exit.
+            ModSupersedes { feature: "cuo:ui/system-log".into() },
+            UiContainsByBounds {},
+            UiName { value: ROOT.into() },
+        ));
+        self.page = Some(page);
+        // A page's window is born movable: a locked log must not be, from the start.
+        self.apply_lock(cmds);
+    }
+
+    // The chrome: classes and captions only — the page owns the look, and the
     // geometry belongs to the host once the window is up.
-    fn paint(&mut self, cmds: &mut Commands) {
-        let alpha = self.alpha(255);
-        if alpha == self.painted_alpha
-            && self.tab == self.painted_tab
-            && self.locked == self.painted_locked
-            && self.opt_open == self.painted_opt
-            && self.w == self.painted_w
-            && self.h == self.painted_h
-        {
+    fn paint(&mut self, page: u64, hovered: bool, cmds: &mut Commands) {
+        let state = (hovered, self.tab, self.locked, self.opt_open);
+        if self.painted == Some(state) && !self.tabs_dirty {
             return;
         }
-        let size_changed = self.w != self.painted_w || self.h != self.painted_h;
-        self.painted_alpha = alpha;
-        self.painted_tab = self.tab;
-        self.painted_locked = self.locked;
-        self.painted_opt = self.opt_open;
-        self.painted_w = self.w;
-        self.painted_h = self.h;
-        let fade = self.fade;
-        let a = move |full: u8| alpha_of(full, fade);
+        let old = self.painted.replace(state);
 
         // Idle the log sits UNDER every gump (like the built-in one); hovering
         // lifts it so the tabs aren't buried by whatever is on top.
-        let z = if alpha > 0 { HOVER_Z } else { IDLE_Z };
-        let z_changed = z != self.painted_z;
-        self.painted_z = z;
-
-        let Some(ui) = &self.ui else { return };
-        cmds.entity(ui.root).insert(BackgroundColor { value: rgb(theme::BG, a(200)) });
-        if z_changed {
-            cmds.entity(ui.root).insert(GlobalZIndex { value: z });
+        if old.map(|o| o.0) != Some(hovered) {
+            cmds.entity(Entity::from_bits(page)).insert(GlobalZIndex { value: if hovered { HOVER_Z } else { IDLE_Z } });
         }
-
-        let mut r = row(0.0, 0.0, self.w, TAB_H);
-        r.display = if self.fade > 0.01 { display::FLEX } else { display::NONE };
-        cmds.entity(ui.strip).insert((BackgroundColor { value: rgb(theme::PANEL, a(245)) }, r));
-
-        // Selected reads like the host's: gold fill, dark caption.
-        let (on_bg, on_fg) = (rgb(theme::ACCENT, a(255)), rgb(theme::TEXT_ON_ACCENT, a(255)));
-        let (off_bg, off_fg) = (rgb(theme::CONTROL, a(255)), rgb(theme::TEXT_MUTED, a(255)));
-        for (i, &tab) in ui.tabs.iter().enumerate() {
-            let active = i == self.tab;
-            cmds.entity(tab).insert((
-                BackgroundColor { value: if active { on_bg.clone() } else { off_bg.clone() } },
-                TextColor { value: if active { on_fg.clone() } else { off_fg.clone() } },
-            ));
+        if self.tabs_dirty || old.map(|o| o.1) != Some(self.tab) {
+            self.tabs_dirty = false;
+            let tabs: String = (0..self.tab_count()).map(|i| tab_html(i, i == self.tab, &self.tab_label(i))).collect();
+            host::page_edit(page, "tabs", &PageChange::Html(tabs));
         }
-
-        let open = self.opt_open;
-        cmds.entity(ui.opt_btn).insert((
-            TextColor { value: if open { on_fg.clone() } else { off_fg.clone() } },
-            BackgroundColor { value: if open { on_bg.clone() } else { off_bg.clone() } },
-        ));
-
-        // Locked reads gold (accent), unlocked warn-red — same convention the built-in
-        // window uses for its padlock (the gump set has no open-padlock art).
-        let locked = self.locked;
-        cmds.entity(ui.lock).insert((
-            Text { value: if locked { "LOCK" } else { "MOVE" }.into() },
-            TextColor { value: if locked { rgb(theme::ACCENT, a(255)) } else { rgb(theme::WARN, a(255)) } },
-            BackgroundColor { value: off_bg.clone() },
-        ));
-
-        // The text column tracks the window box (the host resizes the ROOT only;
-        // absolute children keep their own size). Only on a real resize.
-        if size_changed {
-            cmds.entity(ui.area).insert(column(PAD, TAB_H, self.w - PAD * 2.0, self.h - TAB_H - 2.0));
-        }
-
-        let mut g = grip_node(self.w, self.h);
-        g.display = if alpha > 0 && !self.locked { display::FLEX } else { display::NONE };
-        cmds.entity(ui.grip).insert((BackgroundColor { value: rgb(theme::FRAME, a(255)) }, g));
+        host::page_edit(page, "journal", &class(!hovered, "idle"));
+        // A locked window can't be resized, so it must not advertise a grip.
+        host::page_edit(page, "journal", &class(self.locked, "locked"));
+        host::page_edit(page, "opt", &class(self.opt_open, "on"));
+        host::page_edit(page, "lock", &PageChange::Text(if self.locked { "LOCK" } else { "MOVE" }.into()));
     }
 
-    fn alpha(&self, full: u8) -> u8 {
-        alpha_of(full, self.fade)
-    }
-
-    fn paint_lines(&mut self, cmds: &mut Commands, show_all: bool) {
+    fn paint_lines(&mut self, page: u64, show_all: bool) {
         // Newest last: walk the tail of the list that passes the tab + freshness
-        // filter, oldest first, and fill the slots bottom-up.
+        // filter, newest first, and write them oldest first.
         //
         // Along the way, remember when the SHOWN set next changes by itself — the
         // soonest expiry among the lines actually on screen. tick watches that one
@@ -795,168 +538,162 @@ impl Journal {
             }
             picked.push(line);
         }
-        picked.reverse();
 
-        if let Some(ui) = &self.ui {
-            let first = LINE_SLOTS - picked.len();
-            for (slot, &ent) in ui.lines.iter().enumerate() {
-                let mut node = line_node();
-                let Some(line) = slot.checked_sub(first).map(|i| picked[i]) else {
-                    node.display = display::NONE;
-                    cmds.entity(ent).insert(node);
-                    continue;
-                };
-                // Hand the host the RAW server hue and let it paint the line exactly
-                // as the built-in log does — baked colour, legacy black border, and
-                // the ascii/unicode split resolved from FontId. Converting the hue
-                // here instead would be both flatter (no border) and wrong: a hue
-                // ramp lookup answers GetPolygoneColor(30, hue + 1), the wire
-                // convention chat and nameplates use, while text baking answers
-                // GetPolygoneColor(30, hue) — one table entry apart.
-                cmds.entity(ent).insert((
-                    node,
-                    Text { value: line.text.clone() },
-                    TextFont { font_id: line.font_id, size: 13 },
-                    TextHue { value: self.hue_of(line) },
-                ));
-            }
-        }
+        // The RAW server hue as `hue(N)`: the host paints the line exactly as the
+        // built-in log does — baked colour, legacy black border. Converting the hue
+        // to RGB here would be both flatter (no border) and one table entry off.
+        // One markup write per change of the list, not per line and not per frame.
+        let html: String = picked.iter().rev().map(|l| line_html(&l.font, self.hue_of(l), &l.text)).collect();
+        host::page_edit(page, "lines", &PageChange::Html(html));
         self.next_expire = next_expire;
     }
 
-    // ---- options window ----------------------------------------------
-
-    fn tick_opt(&mut self, cmds: &mut Commands) {
-        if self.opt_rebuild {
-            self.opt_rebuild = false;
-            if let Some(opt) = self.opt.take() {
-                // Despawn now, spawn next tick, so no click or edit aimed at the old
-                // rows can land on the new ones.
-                cmds.entity(opt.root).despawn();
-                return;
-            }
-        }
-        if self.opt_open && self.opt.is_none() {
-            self.spawn_opt(cmds);
-        }
-    }
-
-    fn spawn_opt(&mut self, cmds: &mut Commands) {
-        // Children: title, caption, tab rows, add, caption, rule rows, add.
-        let rows = (self.tabs.len() + self.rules.len()) as f32;
-        let h = OPT_PAD * 2.0 + OPT_ROW_H * (rows + 3.0) + OPT_CAP_H * 2.0 + OPT_GAP * (rows + 4.0);
-        let bx = Node {
-            flex_direction: flex_direction::COLUMN,
-            padding: UiRect::splat(Val::px(OPT_PAD)),
-            gap: Val::px(OPT_GAP),
-            ..Node::abs(self.x, (self.y - h - 4.0).max(0.0), OPT_W, h)
-        };
-        let root = cmds
-            .spawn((
-                bx,
-                BackgroundColor { value: rgb(theme::BG, 247) },
-                BorderRadius::all(8.0),
-                GlobalZIndex { value: OPT_Z },
-                UiMovable {},
-                UiNoRightClickClose {},
-                UiContainsByBounds {},
-                Interaction::NONE,
-                UiName { value: OPT.into() },
-            ))
-            .id();
-        let mut fields = Vec::new();
-        let mut field = |e: Entity, f: Field| fields.push((e, f));
-
-        let title = opt_row(cmds, root);
-        opt_label(cmds, title, "Journal options", OPT_W - OPT_PAD * 2.0 - 28.0, OPT_ROW_H, true);
-        field(opt_button(cmds, title, OPT_CLOSE, "X", 20.0), Field::Close);
-
-        opt_label(cmds, root, "Tabs:  name · type · text contains · hue", OPT_W, OPT_CAP_H, false);
-        for (i, t) in self.tabs.iter().enumerate() {
-            let row = opt_row(cmds, root);
-            let ty = filters::type_name(t.filter.ty);
-            field(opt_field(cmds, row, &tab_field(i, "name"), 90.0, &t.name), Field::TabName(i));
-            field(opt_button(cmds, row, &tab_field(i, "type"), &ty, 70.0), Field::TabType(i));
-            field(opt_field(cmds, row, &tab_field(i, "text"), 170.0, &t.filter.text), Field::TabText(i));
-            field(opt_field(cmds, row, &tab_field(i, "hue"), 60.0, &filters::hue_text(t.filter.hue)), Field::TabHue(i));
-            field(opt_button(cmds, row, &tab_field(i, "del"), "x", 20.0), Field::TabDel(i));
-        }
-        let add = opt_row(cmds, root);
-        field(opt_button(cmds, add, OPT_ADD_TAB, "+ Tab", 60.0), Field::AddTab);
-
-        opt_label(cmds, root, "Rules:  type · text contains · hue · new hue · hide", OPT_W, OPT_CAP_H, false);
-        for (i, r) in self.rules.iter().enumerate() {
-            let row = opt_row(cmds, root);
-            let ty = filters::type_name(r.filter.ty);
-            let hide = if r.hide { "HIDE" } else { "show" };
-            field(opt_button(cmds, row, &rule_field(i, "type"), &ty, 70.0), Field::RuleType(i));
-            field(opt_field(cmds, row, &rule_field(i, "text"), 170.0, &r.filter.text), Field::RuleText(i));
-            field(opt_field(cmds, row, &rule_field(i, "hue"), 60.0, &filters::hue_text(r.filter.hue)), Field::RuleHue(i));
-            field(opt_field(cmds, row, &rule_field(i, "color"), 60.0, &filters::hue_text(r.color)), Field::RuleColor(i));
-            field(opt_button(cmds, row, &rule_field(i, "hide"), hide, 44.0), Field::RuleHide(i));
-            field(opt_button(cmds, row, &rule_field(i, "del"), "x", 20.0), Field::RuleDel(i));
-        }
-        let add = opt_row(cmds, root);
-        field(opt_button(cmds, add, OPT_ADD_RULE, "+ Rule", 60.0), Field::AddRule);
-
-        self.opt = Some(OptUi { root, fields });
-    }
-
-    fn clicks(&mut self, e: Entity, cmds: &mut Commands) {
-        let Some(ui) = &self.ui else { return };
-
-        if let Some(i) = ui.tabs.iter().position(|&t| t == e) {
-            if self.tab != i {
+    fn click(&mut self, click: &str, cmds: &mut Commands) {
+        match click.split_once(':') {
+            Some(("tab", i)) => {
+                let Some(i) = i.parse().ok().filter(|&i| i < self.tab_count() && i != self.tab) else { return };
                 self.tab = i;
                 self.scroll = 0; // a different channel, a different history
                 self.dirty = true;
                 self.save();
             }
-            return;
-        }
-
-        if e == ui.lock {
-            self.locked = !self.locked;
-            self.apply_lock(cmds);
-            self.save();
-            return;
-        }
-
-        let field = self.opt.as_ref().and_then(|o| o.field_of(e));
-        if e == ui.opt_btn || field == Some(Field::Close) {
-            self.opt_open = !self.opt_open;
-            self.opt_rebuild = true;
-            return;
-        }
-
-        if let Some(f) = field {
-            self.opt_click(f, cmds);
+            None if click == "lock" => {
+                self.locked = !self.locked;
+                self.apply_lock(cmds);
+                self.save();
+            }
+            None if click == "opt" => self.opt_open = !self.opt_open,
+            _ => {}
         }
     }
 
-    fn opt_click(&mut self, f: Field, cmds: &mut Commands) {
-        match f {
-            Field::AddTab => {
-                if self.tabs.len() < MAX_CUSTOM_TABS {
-                    self.tabs.push(CustomTab::default());
-                    self.tabs_changed(cmds);
-                }
+    // ---- options window ----------------------------------------------
+
+    fn tick_opt(&mut self, cmds: &mut Commands) {
+        // Closed by OPT, or by its own X (then it is already gone).
+        if let Some(opt) = self.opt.filter(|&o| !self.opt_open || !host::page_is_open(o)) {
+            host::page_close(opt);
+            self.opt = None;
+            self.opt_open = false;
+        }
+        if !self.opt_open {
+            return;
+        }
+        let Some(opt) = self.opt else {
+            // Just above the journal. Separate window: it never fades.
+            let h = OPT_H + OPT_ROW_H * (self.tabs.len() + self.rules.len()) as f32;
+            let Some(opt) = host::page_spawn(OPT_PAGE, OPT_HTML, OPT_CSS, self.x as i32, (self.y - h - 4.0).max(0.0) as i32) else {
+                self.opt_open = false;
+                return;
+            };
+            cmds.entity(Entity::from_bits(opt)).insert((GlobalZIndex { value: OPT_Z }, UiNoRightClickClose {}, UiName { value: OPT.into() }));
+            self.opt = Some(opt);
+            (self.opt_rows, self.opt_dirty) = (0, true);
+            return;
+        };
+
+        // A reload made new inputs holding what the last fill wrote: fill again
+        // before reading any, or their stale values would come back as edits.
+        let rows = host::page_element(opt, "tab-rows").unwrap_or(0);
+        if rows != self.opt_rows {
+            (self.opt_rows, self.opt_dirty) = (rows, true);
+        } else if rows != 0 {
+            self.opt_poll(opt);
+        }
+        for click in host::page_clicks(opt) {
+            self.opt_click(&click);
+        }
+        if self.opt_dirty {
+            self.opt_dirty = false;
+            self.opt_seen.clear();
+            self.fill_opt(opt);
+        }
+    }
+
+    // One .row per custom tab and per rule, holding the current values.
+    fn fill_opt(&self, opt: u64) {
+        let tabs: String = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let cells = [
+                    input_html('t', i, "name", &t.name),
+                    button_html("type", "tab-type", i, &filters::type_name(t.filter.ty)),
+                    input_html('t', i, "text", &t.filter.text),
+                    input_html('t', i, "hue", &filters::hue_text(t.filter.hue)),
+                    button_html("del", "tab-del", i, "x"),
+                ];
+                format!(r#"<div class="row">{}</div>"#, cells.concat())
+            })
+            .collect();
+        let rules: String = self
+            .rules
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let cells = [
+                    button_html("type", "rule-type", i, &filters::type_name(r.filter.ty)),
+                    input_html('r', i, "text", &r.filter.text),
+                    input_html('r', i, "hue", &filters::hue_text(r.filter.hue)),
+                    input_html('r', i, "color", &filters::hue_text(r.color)),
+                    button_html("hide", "rule-hide", i, if r.hide { "HIDE" } else { "show" }),
+                    button_html("del", "rule-del", i, "x"),
+                ];
+                format!(r#"<div class="row">{}</div>"#, cells.concat())
+            })
+            .collect();
+        host::page_edit(opt, "tab-rows", &PageChange::Html(tabs));
+        host::page_edit(opt, "rule-rows", &PageChange::Html(rules));
+    }
+
+    // Typing in an options field: an input whose value moved since the last read.
+    fn opt_poll(&mut self, opt: u64) {
+        let tabs = (0..self.tabs.len()).flat_map(|i| TAB_FIELDS.map(|f| ('t', i, f)));
+        let rules = (0..self.rules.len()).flat_map(|i| RULE_FIELDS.map(|f| ('r', i, f)));
+        let fields: Vec<(char, usize, &str)> = tabs.chain(rules).collect();
+        let values = fields.iter().map(|(kind, i, f)| host::page_value(opt, &format!("{kind}{i}-{f}")).unwrap_or_default()).collect();
+        let seen = std::mem::replace(&mut self.opt_seen, values);
+        if seen.len() != fields.len() {
+            return; // the first read after a fill
+        }
+        let mut changed = false;
+        for (n, &(kind, i, field)) in fields.iter().enumerate() {
+            if self.opt_seen[n] == seen[n] {
+                continue;
             }
-            Field::AddRule => {
-                if self.rules.len() < MAX_RULES {
-                    self.rules.push(Rule::default());
-                    self.opt_rebuild = true;
-                    self.filters_changed();
+            let value = filters::clean(&self.opt_seen[n]);
+            match (kind, field) {
+                ('t', "name") => {
+                    self.tabs[i].name = value;
+                    self.tabs_dirty = true;
                 }
+                ('t', "text") => self.tabs[i].filter.text = value,
+                ('t', _) => self.tabs[i].filter.hue = filters::parse_hue(&value),
+                (_, "text") => self.rules[i].filter.text = value,
+                (_, "hue") => self.rules[i].filter.hue = filters::parse_hue(&value),
+                _ => self.rules[i].color = filters::parse_hue(&value),
             }
-            Field::TabType(i) if i < self.tabs.len() => {
+            changed = true;
+        }
+        if changed {
+            self.filters_changed();
+        }
+    }
+
+    fn opt_click(&mut self, click: &str) {
+        let (verb, i) = click.split_once(':').map_or((click, 0), |(v, i)| (v, i.parse().unwrap_or(usize::MAX)));
+        match verb {
+            "add-tab" if self.tabs.len() < MAX_CUSTOM_TABS => {
+                self.tabs.push(CustomTab::default());
+                self.tabs_dirty = true;
+            }
+            "add-rule" if self.rules.len() < MAX_RULES => self.rules.push(Rule::default()),
+            "tab-type" if i < self.tabs.len() => {
                 let fl = &mut self.tabs[i].filter;
                 fl.ty = filters::next_type(fl.ty);
-                let label = filters::type_name(fl.ty);
-                self.relabel_field(cmds, f, &label);
-                self.filters_changed();
             }
-            Field::TabDel(i) if i < self.tabs.len() => {
+            "tab-del" if i < self.tabs.len() => {
                 // Keep the selection on the same tab when an earlier one goes away.
                 let idx = TAB_LABELS.len() + i;
                 if self.tab == idx {
@@ -965,63 +702,20 @@ impl Journal {
                     self.tab -= 1;
                 }
                 self.tabs.remove(i);
-                self.tabs_changed(cmds);
+                self.tabs_dirty = true;
             }
-            Field::RuleType(i) if i < self.rules.len() => {
+            "rule-type" if i < self.rules.len() => {
                 let fl = &mut self.rules[i].filter;
                 fl.ty = filters::next_type(fl.ty);
-                let label = filters::type_name(fl.ty);
-                self.relabel_field(cmds, f, &label);
-                self.filters_changed();
             }
-            Field::RuleHide(i) if i < self.rules.len() => {
-                let r = &mut self.rules[i];
-                r.hide = !r.hide;
-                let label = if r.hide { "HIDE" } else { "show" };
-                self.relabel_field(cmds, f, label);
-                self.filters_changed();
-            }
-            Field::RuleDel(i) if i < self.rules.len() => {
+            "rule-hide" if i < self.rules.len() => self.rules[i].hide = !self.rules[i].hide,
+            "rule-del" if i < self.rules.len() => {
                 self.rules.remove(i);
-                self.opt_rebuild = true;
-                self.filters_changed();
             }
-            _ => {}
-        }
-    }
-
-    fn opt_edit(&mut self, e: Entity, value: &str, cmds: &mut Commands) {
-        let Some(f) = self.opt.as_ref().and_then(|o| o.field_of(e)) else { return };
-        let value = filters::clean(value);
-
-        match f {
-            Field::TabName(i) if i < self.tabs.len() => {
-                if self.tabs[i].name == value {
-                    return;
-                }
-                self.tabs[i].name = value;
-                let idx = TAB_LABELS.len() + i;
-                let label = self.tab_label(idx);
-                if let Some(&tab) = self.ui.as_ref().and_then(|ui| ui.tabs.get(idx)) {
-                    cmds.entity(tab).insert(Text { value: label });
-                }
-                self.save();
-                return;
-            }
-            Field::TabText(i) if i < self.tabs.len() => self.tabs[i].filter.text = value,
-            Field::TabHue(i) if i < self.tabs.len() => self.tabs[i].filter.hue = filters::parse_hue(&value),
-            Field::RuleText(i) if i < self.rules.len() => self.rules[i].filter.text = value,
-            Field::RuleHue(i) if i < self.rules.len() => self.rules[i].filter.hue = filters::parse_hue(&value),
-            Field::RuleColor(i) if i < self.rules.len() => self.rules[i].color = filters::parse_hue(&value),
             _ => return,
         }
+        self.opt_dirty = true;
         self.filters_changed();
-    }
-
-    fn relabel_field(&self, cmds: &mut Commands, f: Field, text: &str) {
-        if let Some(e) = self.opt.as_ref().and_then(|o| o.entity_of(f)) {
-            cmds.entity(e).insert(Text { value: text.into() });
-        }
     }
 
     // Filters are applied at paint, so an edit recolours/refilters the history too.
@@ -1030,32 +724,25 @@ impl Journal {
         self.save();
     }
 
-    // The strip holds one node per tab, so a tab added or removed rebuilds the
-    // journal (next tick, from the state just saved) along with the options rows.
-    fn tabs_changed(&mut self, cmds: &mut Commands) {
-        self.opt_rebuild = true;
-        self.filters_changed();
-        self.teardown(cmds);
-    }
-
     // ---- lock / persistence -----------------------------------------
 
-    // Locked = no drag, no resize. Both gestures are host-owned markers, so this
-    // is just add/remove.
+    // Locked = no drag, no resize, and no window to the host: clicks reach the
+    // world. Both gestures are host-owned markers, so this is just add/remove.
     fn apply_lock(&self, cmds: &mut Commands) {
-        let Some(ui) = &self.ui else { return };
+        let Some(page) = self.page else { return };
+        let root = Entity::from_bits(page);
         if self.locked {
-            cmds.entity(ui.root).remove::<(UiMovable, UiResizable)>();
+            cmds.entity(root).remove::<(UiMovable, UiResizable)>();
             return;
         }
-        cmds.entity(ui.root).insert((
+        cmds.entity(root).insert((
             UiMovable {},
             UiResizable {
                 min_w: MIN_W,
                 min_h: MIN_H,
                 max_w: MAX_W,
                 max_h: MAX_H,
-                grip: GRIP_SIZE, // same square the visible grip draws
+                grip: GRIP_SIZE, // same square the page's #grip draws
                 ..Default::default()
             },
         ));
@@ -1077,6 +764,7 @@ impl Journal {
         self.rules = s.rules;
         self.tab = s.tab.min(self.tab_count() - 1);
         self.saved_state = raw;
+        self.tabs_dirty = true;
     }
 
     fn save(&mut self) {
@@ -1098,161 +786,57 @@ impl Journal {
     }
 }
 
-// ---- spawners ----------------------------------------------------------
+// ---- markup ------------------------------------------------------------
 
-fn strip_button(cmds: &mut Commands, parent: Entity, name: &str, label: &str, bg: Color, fg: Color) -> Entity {
-    cmds.spawn((
-        tab_node(),
-        BackgroundColor { value: bg },
-        BorderRadius::all(4.0),
-        Text { value: label.into() },
-        TextFont { font_id: theme::BOLD, size: theme::size(11) },
-        TextColor { value: fg },
-        Interaction::NONE,
-        UiNoWindowDrag {},
-        UiName { value: name.into() },
-        ChildOf::new(parent),
-    ))
-    .id()
+fn class(on: bool, name: &str) -> PageChange {
+    if on { PageChange::AddClass(name.into()) } else { PageChange::RemoveClass(name.into()) }
 }
 
-fn opt_row(cmds: &mut Commands, parent: Entity) -> Entity {
-    let n = Node {
-        flex_direction: flex_direction::ROW,
-        align_items: align_items::CENTER,
-        width: Val::percent(100.0),
-        height: Val::px(OPT_ROW_H),
-        gap: Val::px(4.0),
-        ..Node::base()
-    };
-    cmds.spawn((n, ChildOf::new(parent))).id()
-}
-
-fn opt_label(cmds: &mut Commands, parent: Entity, text: &str, w: f32, h: f32, title: bool) {
-    let n = Node { width: Val::px(w), height: Val::px(h), align_items: align_items::CENTER, ..Node::base() };
-    let font = if title {
-        TextFont { font_id: theme::BOLD, size: theme::size(13) }
-    } else {
-        TextFont { font_id: theme::REGULAR, size: theme::size(11) }
-    };
-    cmds.spawn((
-        n,
-        Text { value: text.into() },
-        font,
-        TextColor { value: rgb(if title { theme::TEXT } else { theme::TEXT_MUTED }, 255) },
-        ChildOf::new(parent),
-    ));
-}
-
-// Editable: the host focuses it on press and its editor owns the keys from
-// there; the value comes back through the opt_edit changed-Text feed.
-fn opt_field(cmds: &mut Commands, parent: Entity, name: &str, w: f32, value: &str) -> Entity {
-    let n = Node {
-        width: Val::px(w),
-        height: Val::px(OPT_ROW_H - 2.0),
-        align_items: align_items::CENTER,
-        padding: pad_x(3.0),
-        overflow: overflow::CLIP,
-        ..Node::base()
-    };
-    cmds.spawn((
-        n,
-        BackgroundColor { value: rgb(theme::FIELD, 255) },
-        BorderRadius::all(4.0),
-        Text { value: value.into() },
-        TextFont { font_id: theme::REGULAR, size: theme::size(12) },
-        TextColor { value: rgb(theme::TEXT, 255) },
-        TextInput {},
-        EditableText::default(),
-        UiNoWindowDrag {},
-        Interaction::NONE,
-        UiName { value: name.into() },
-        ChildOf::new(parent),
-    ))
-    .id()
-}
-
-fn opt_button(cmds: &mut Commands, parent: Entity, name: &str, text: &str, w: f32) -> Entity {
-    let n = Node {
-        width: Val::px(w),
-        height: Val::px(OPT_ROW_H - 2.0),
-        justify_content: justify_content::CENTER,
-        align_items: align_items::CENTER,
-        ..Node::base()
-    };
-    cmds.spawn((
-        n,
-        BackgroundColor { value: rgb(theme::CONTROL, 255) },
-        BorderRadius::all(4.0),
-        Text { value: text.into() },
-        TextFont { font_id: theme::REGULAR, size: theme::size(11) },
-        TextColor { value: rgb(theme::TEXT, 255) },
-        Interaction::NONE,
-        UiNoWindowDrag {},
-        UiName { value: name.into() },
-        ChildOf::new(parent),
-    ))
-    .id()
-}
-
-// ---- node shapes -------------------------------------------------------
-
-fn alpha_of(full: u8, fade: f32) -> u8 {
-    (full as f32 * fade).clamp(0.0, 255.0) as u8
-}
-
-fn pad_x(v: f32) -> UiRect {
-    UiRect { left: Val::px(v), right: Val::px(v), top: Val::px(0.0), bottom: Val::px(0.0) }
-}
-
-// Flush to the bottom-right corner — UiResizablePlugin's hit square is
-// (left + width - grip, top + height - grip), so no inset here either.
-fn grip_node(w: f32, h: f32) -> Node {
-    Node::abs(w - GRIP_SIZE, h - GRIP_SIZE, GRIP_SIZE, GRIP_SIZE)
-}
-
-fn row(x: f32, y: f32, w: f32, h: f32) -> Node {
-    Node {
-        flex_direction: flex_direction::ROW,
-        align_items: align_items::CENTER,
-        gap: Val::px(2.0),
-        padding: pad_x(2.0),
-        ..Node::abs(x, y, w, h)
+// Server and player text goes into markup: it must not read as tags or end an attribute.
+fn escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            c => out.push(c),
+        }
     }
+    out
 }
 
-fn grow(h: f32) -> Node {
-    Node {
-        flex_direction: flex_direction::ROW,
-        align_items: align_items::CENTER,
-        overflow: overflow::CLIP,
-        // Fill what the parent has left (Clay Grow).
-        width: Val { type_: val_type::GROW, value: 0.0, is_auto: false },
-        height: Val::px(h),
-        gap: Val::px(2.0),
-        ..Node::base()
+fn line_html(font: &str, hue: u16, text: &str) -> String {
+    format!(r#"<div class="line" style="font-family: {font}; color: hue({hue})">{}</div>"#, escape(text))
+}
+
+fn tab_html(i: usize, on: bool, label: &str) -> String {
+    let on = if on { " on" } else { "" };
+    format!(r#"<button class="tab{on}" data-action="mod" data-arg="tab:{i}">{}</button>"#, escape(label))
+}
+
+// An options field, #t<i>-<field> or #r<i>-<field>; its class is the field.
+fn input_html(kind: char, i: usize, field: &str, value: &str) -> String {
+    format!(r#"<input id="{kind}{i}-{field}" class="{field}" value="{}">"#, escape(value))
+}
+
+fn button_html(class: &str, verb: &str, i: usize, label: &str) -> String {
+    format!(r#"<button class="{class}" data-action="mod" data-arg="{verb}:{i}">{label}</button>"#)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_in_markup_is_escaped() {
+        assert_eq!(escape(r#"<b a="1">&</b>"#), "&lt;b a=&quot;1&quot;&gt;&amp;&lt;/b&gt;");
+        assert_eq!(
+            line_html("uo-ascii-3", 946, "Bob: <hi> & bye"),
+            r#"<div class="line" style="font-family: uo-ascii-3; color: hue(946)">Bob: &lt;hi&gt; &amp; bye</div>"#
+        );
+        assert_eq!(tab_html(5, true, "a<b"), r#"<button class="tab on" data-action="mod" data-arg="tab:5">a&lt;b</button>"#);
+        assert_eq!(input_html('t', 2, "name", r#"say "x""#), r#"<input id="t2-name" class="name" value="say &quot;x&quot;">"#);
     }
-}
-
-fn tab_node() -> Node {
-    Node {
-        height: Val::px(TAB_H - 2.0),
-        justify_content: justify_content::CENTER,
-        align_items: align_items::CENTER,
-        padding: pad_x(5.0),
-        ..Node::base()
-    }
-}
-
-fn column(x: f32, y: f32, w: f32, h: f32) -> Node {
-    Node {
-        flex_direction: flex_direction::COLUMN,
-        justify_content: justify_content::END,
-        overflow: overflow::CLIP,
-        ..Node::abs(x, y, w, h)
-    }
-}
-
-fn line_node() -> Node {
-    Node { width: Val::percent(100.0), height: Val::auto(), min_height: Val::px(LINE_H), ..Node::base() }
 }

@@ -1,0 +1,39 @@
+/* The journal window (cuo-journal-mod). It takes the client's theme (<body data-theme>): the window
+   is the theme's, the rest is here. The body's padding stays 0, since the mod sizes the window: the
+   insets are on #lines. Everything here is yours to change. */
+
+body {
+  position: relative; display: flex; flex-direction: column; margin: 0; padding: 0; width: 100%; height: 100%; font-size: 13px;
+  transition: background-color 170ms linear, border-color 170ms linear;
+}
+/* The cursor is away: no window, only the lines. */
+body.idle { background-color: transparent; background-image: none; border-color: transparent }
+body.idle #strip, body.idle #grip, body.locked #grip { display: none }
+
+#strip {
+  display: flex; align-items: center; flex-shrink: 0; gap: 2px; box-sizing: border-box; height: 20px; padding: 0 2px;
+  background-color: rgba(255, 255, 255, 0.05); border-radius: 7px 7px 0 0;
+}
+#tabs { display: flex; align-items: center; flex-grow: 1; min-width: 0; gap: 2px; height: 20px; overflow: hidden }
+.tab, #opt, #lock {
+  display: flex; justify-content: center; align-items: center; flex-shrink: 0; height: 18px; padding: 0 5px;
+  background-color: var(--theme-button-bg, rgb(28, 36, 47)); border-radius: 4px;
+  color: var(--theme-muted, rgb(152, 162, 173)); font-size: 13px; font-weight: bold;
+}
+/* Flat, whatever the theme's button is. */
+.tab, .tab:hover, #opt, #opt:hover, #lock, #lock:hover { background-image: none; border: none }
+/* The shown tab, and OPT while the options are open. */
+.tab.on, #opt.on { background-color: var(--theme-accent, rgb(47, 191, 174)); color: rgb(4, 35, 31) }
+/* MOVE (unlocked) reads as a warning, LOCK as the accent. */
+#lock { color: rgb(240, 123, 123) }
+body.locked #lock { color: var(--theme-accent, rgb(47, 191, 174)) }
+
+/* Newest at the bottom; what doesn't fit is cut at the top. The mod sets each line's font and hue. */
+#lines { display: flex; flex-direction: column; justify-content: flex-end; flex-grow: 1; min-height: 0; margin: 0 4px 2px; overflow: hidden }
+.line { width: 100%; flex-shrink: 0; min-height: 15px }
+
+/* The corner mark of the resize grip: the host's grab square is these 10px, flush in the corner. */
+#grip {
+  position: absolute; right: 0; bottom: 0; box-sizing: border-box; width: 10px; height: 10px;
+  border-right: 2px solid var(--theme-border, rgb(52, 61, 74)); border-bottom: 2px solid var(--theme-border, rgb(52, 61, 74)); border-radius: 0 0 4px 0;
+}
