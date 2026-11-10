@@ -53,9 +53,9 @@ const MAX_H: f32 = 700.0;
 // guest can't read the host's palette; keep in step with UiTheme by hand.
 mod theme {
     pub type Rgb = (u8, u8, u8);
-    pub const BG: Rgb = (9, 12, 17);
+    pub const BG: Rgb = (13, 17, 23);
     pub const PANEL: Rgb = (16, 21, 29);
-    pub const FRAME: Rgb = (39, 45, 54);
+    pub const FRAME: Rgb = (52, 61, 74);
     pub const CONTROL: Rgb = (28, 36, 47);
     pub const FIELD: Rgb = (34, 43, 56);
     pub const ACCENT: Rgb = (47, 191, 174);
@@ -597,7 +597,7 @@ impl Journal {
             .spawn((
                 Node::abs(self.x, self.y, self.w, self.h),
                 BackgroundColor { value: rgb(theme::BG, 0) },
-                BorderRadius::all(4.0),
+                BorderRadius::all(8.0),
                 GlobalZIndex { value: IDLE_Z },
                 // Right-click must not close the log; drag/resize are added by
                 // apply_lock once the saved lock state is known.
@@ -667,7 +667,7 @@ impl Journal {
             .spawn((
                 grip_node(self.w, self.h),
                 BackgroundColor { value: rgb(theme::FRAME, 0) },
-                BorderRadius::all(3.0),
+                BorderRadius::all(4.0),
                 UiName { value: GRIP.into() },
                 ChildOf::new(root),
             ))
@@ -854,8 +854,8 @@ impl Journal {
         let root = cmds
             .spawn((
                 bx,
-                BackgroundColor { value: rgb(theme::BG, 250) },
-                BorderRadius::all(4.0),
+                BackgroundColor { value: rgb(theme::BG, 247) },
+                BorderRadius::all(8.0),
                 GlobalZIndex { value: OPT_Z },
                 UiMovable {},
                 UiNoRightClickClose {},
@@ -1104,7 +1104,7 @@ fn strip_button(cmds: &mut Commands, parent: Entity, name: &str, label: &str, bg
     cmds.spawn((
         tab_node(),
         BackgroundColor { value: bg },
-        BorderRadius::all(3.0),
+        BorderRadius::all(4.0),
         Text { value: label.into() },
         TextFont { font_id: theme::BOLD, size: theme::size(11) },
         TextColor { value: fg },
@@ -1158,7 +1158,7 @@ fn opt_field(cmds: &mut Commands, parent: Entity, name: &str, w: f32, value: &st
     cmds.spawn((
         n,
         BackgroundColor { value: rgb(theme::FIELD, 255) },
-        BorderRadius::all(3.0),
+        BorderRadius::all(4.0),
         Text { value: value.into() },
         TextFont { font_id: theme::REGULAR, size: theme::size(12) },
         TextColor { value: rgb(theme::TEXT, 255) },
@@ -1183,7 +1183,7 @@ fn opt_button(cmds: &mut Commands, parent: Entity, name: &str, text: &str, w: f3
     cmds.spawn((
         n,
         BackgroundColor { value: rgb(theme::CONTROL, 255) },
-        BorderRadius::all(3.0),
+        BorderRadius::all(4.0),
         Text { value: text.into() },
         TextFont { font_id: theme::REGULAR, size: theme::size(11) },
         TextColor { value: rgb(theme::TEXT, 255) },
